@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}Snapshot {{ snapshot.captured_at|date:"Y-m-d H:i" }} — {{ snapshot.document }} — TosDiff{% endblock %}
+
+{% block extra_css %}
+<style>
+  .snapshot-text {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 0.375rem;
+    padding: 1.25rem;
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'monitor:home' %}">Recent Changes</a></li>
+    <li class="breadcrumb-item">
+      <a href="{% url 'monitor:document_detail' snapshot.document.pk %}">{{ snapshot.document }}</a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page">
+      Snapshot {{ snapshot.captured_at|date:"Y-m-d H:i" }} UTC
+    </li>
+  </ol>
+</nav>
+
+<div class="d-flex justify-content-between align-items-start mb-3 flex-wrap gap-2">
+  <div>
+    <h1 class="h3 mb-1">Full snapshot text</h1>
+    <p class="text-muted mb-0">
+      {{ snapshot.document }} &mdash;
+      <time datetime="{{ snapshot.captured_at|date:'c' }}">
+        {{ snapshot.captured_at|date:"Y-m-d H:i" }} UTC
+      </time>
+    </p>
+  </div>
+  <div class="d-flex gap-2 flex-wrap">
+    <a href="{{ snapshot.document.url }}" target="_blank" rel="noopener noreferrer"
+       class="btn btn-outline-secondary btn-sm">
+      View live document ↗
+    </a>
+    <a href="{% url 'monitor:document_detail' snapshot.document.pk %}"
+       class="btn btn-outline-secondary btn-sm">
+      ← Timeline
+    </a>
+  </div>
+</div>
+
+<dl class="row small text-muted mb-3">
+  <dt class="col-sm-2">Hash (SHA-256)</dt>
+  <dd class="col-sm-10"><code>{{ snapshot.text_hash }}</code></dd>
+</dl>
+
+<pre class="snapshot-text" aria-label="Snapshot plain text content">{{ snapshot.cleaned_text }}</pre>
+{% endblock %}

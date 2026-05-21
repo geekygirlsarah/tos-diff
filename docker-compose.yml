@@ -1,0 +1,84 @@
+services:
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${DB_NAME:-tosdiff}
+      POSTGRES_USER: ${DB_USER:-tosdiff}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-tosdiff} -d ${DB_NAME:-tosdiff}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build: .
+    command: web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    env_file: .env
+    environment:
+      DB_ENGINE: postgresql
+      DB_HOST: db
+      DB_PORT: "5432"
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - static_files:/app/staticfiles
+
+  worker:
+    build: .
+    command: worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_ENGINE: postgresql
+      DB_HOST: db
+      DB_PORT: "5432"
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build: .
+    command: beat
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_ENGINE: postgresql
+      DB_HOST: db
+      DB_PORT: "5432"
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  static_files:

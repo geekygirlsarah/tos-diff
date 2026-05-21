@@ -1,0 +1,23 @@
+target-version = "py312"
+line-length = 100
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long — handled by formatter
+]
+
+[lint.per-file-ignores]
+"*/migrations/*" = ["E501", "F401"]
+"manage.py" = ["F401"]
+
+[format]
+quote-style = "double"
+indent-style = "space"

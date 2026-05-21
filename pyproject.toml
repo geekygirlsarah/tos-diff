@@ -1,0 +1,33 @@
+[project]
+name = "tosdiff-new"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "django>=6.0.5",
+    "requests>=2.32",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "psycopg[binary]>=3.1",
+    "celery>=5.3",
+    "redis>=5.0",
+    "gunicorn>=22.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "coverage>=7.0",
+]
+
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "*/migrations/*",
+    "*/venv/*",
+    "manage.py",
+    "tosdiff_new/wsgi.py",
+    "tosdiff_new/asgi.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install django requests beautifulsoup4 lxml celery redis coverage
+
+      - name: Run migrations check
+        env:
+          DJANGO_SETTINGS_MODULE: tosdiff_new.settings
+        run: python manage.py migrate --run-syncdb
+
+      - name: Run tests with coverage
+        env:
+          DJANGO_SETTINGS_MODULE: tosdiff_new.settings
+        run: |
+          coverage run manage.py test monitor --verbosity=2
+          coverage report --fail-under=80
+
+  security:
+    name: Security — dependency vulnerability scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Install project dependencies
+        run: pip install django requests beautifulsoup4 lxml celery redis
+
+      - name: Audit dependencies for known vulnerabilities
+        run: pip-audit --strict
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install linting tools
+        run: pip install ruff
+
+      - name: Run ruff (lint + format check)
+        run: |
+          ruff check .
+          ruff format --check .
