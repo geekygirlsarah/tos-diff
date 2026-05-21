@@ -9,11 +9,18 @@ import logging
 
 from celery import shared_task
 from celery.exceptions import MaxRetriesExceededError
+from celery.signals import worker_shutdown
 
 import requests
 
 from .models import Document
-from .services import fetch_and_snapshot
+from .services import close_playwright_browser, fetch_and_snapshot
+
+
+@worker_shutdown.connect
+def _close_playwright_on_shutdown(**kwargs) -> None:
+    """Release the shared Playwright browser when the Celery worker stops."""
+    close_playwright_browser()
 
 logger = logging.getLogger(__name__)
 

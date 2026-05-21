@@ -71,6 +71,11 @@ class Document(models.Model):
         REQUESTS = "requests", "HTTP Requests"
         PLAYWRIGHT = "playwright", "Playwright (headless browser)"
 
+    class DocumentFormat(models.TextChoices):
+        HTML = "html", "HTML"
+        PDF = "pdf", "PDF"
+        TXT = "txt", "TXT"
+
     organization = models.ForeignKey(
         Organization, on_delete=models.CASCADE, related_name="documents"
     )
@@ -80,6 +85,12 @@ class Document(models.Model):
     url = models.URLField(max_length=500)
     fetch_method = models.CharField(
         max_length=20, choices=FetchMethod.choices, default=FetchMethod.REQUESTS
+    )
+    document_format = models.CharField(
+        max_length=10,
+        choices=DocumentFormat.choices,
+        default=DocumentFormat.HTML,
+        help_text="Format of the fetched document (set automatically during fetch).",
     )
     language = models.ForeignKey(
         Language,
@@ -110,6 +121,17 @@ class Document(models.Model):
         help_text=(
             "CSS selectors to exclude before text extraction, one per line. "
             "Example: .cookie-banner\n#sidebar"
+        ),
+    )
+    fetch_config = models.JSONField(
+        blank=True,
+        null=True,
+        default=None,
+        help_text=(
+            "Optional Playwright fetch configuration. "
+            "Keys: wait_for_selector (CSS selector to wait for), "
+            "sleep_seconds (extra wait time for JS rendering), "
+            "dismiss_selectors (list of CSS selectors for cookie/modal buttons to click)."
         ),
     )
 

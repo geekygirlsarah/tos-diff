@@ -17,8 +17,10 @@ from .services import (
     clean_html,
     compute_hash,
     create_snapshot_if_changed,
+    extract_pdf_text,
     extract_text,
     fetch_and_snapshot,
+    fetch_pdf_bytes,
 )
 
 
@@ -413,22 +415,22 @@ class FetchAndSnapshotTest(TestCase):
         org = Organization.objects.create(name="Acme", website_url="https://acme.com")
         self.doc = Document.objects.create(organization=org, url="https://acme.com/tos")
 
-    @patch("monitor.services.fetch_html")
+    @patch("monitor.services.fetch_pdf_bytes")
     def test_creates_snapshot_on_new_content(self, mock_fetch):
-        mock_fetch.return_value = "<html><body><p>Terms of Service</p></body></html>"
+        mock_fetch.return_value = (b"<html><body><p>Terms of Service</p></body></html>", False)
         snapshot, created = fetch_and_snapshot(self.doc)
         self.assertTrue(created)
         self.assertIsNotNone(snapshot)
 
-    @patch("monitor.services.fetch_html")
+    @patch("monitor.services.fetch_pdf_bytes")
     def test_no_snapshot_on_unchanged_content(self, mock_fetch):
-        mock_fetch.return_value = "<html><body><p>Terms of Service</p></body></html>"
+        mock_fetch.return_value = (b"<html><body><p>Terms of Service</p></body></html>", False)
         fetch_and_snapshot(self.doc)
         snapshot, created = fetch_and_snapshot(self.doc)
         self.assertFalse(created)
         self.assertIsNone(snapshot)
 
-    @patch("monitor.services.fetch_html", side_effect=requests.RequestException("Network error"))
+    @patch("monitor.services.fetch_pdf_bytes", side_effect=requests.RequestException("Network error"))
     def test_returns_none_on_fetch_error(self, mock_fetch):
         snapshot, created = fetch_and_snapshot(self.doc)
         self.assertIsNone(snapshot)
@@ -440,6 +442,159 @@ class FetchAndSnapshotTest(TestCase):
         with self.assertRaises(NotImplementedError):
             from monitor.services import fetch_document_content
             fetch_document_content(self.doc)
+
+
+# ---------------------------------------------------------------------------
+# PDF support tests
+# ---------------------------------------------------------------------------
+
+class IsPdfResponseTest(TestCase):
+    """Unit tests for PDF detection logic inside fetch_pdf_bytes."""
+
+    def _make_response(self, content_type: str, url: str = "https://example.com/doc") -> MagicMock:
+        resp = MagicMock()
+        resp.headers = {"Content-Type": content_type}
+        resp.url = url
+        resp.content = b"%PDF-1.4 fake"
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    @patch("monitor.services.requests.get")
+    def test_detects_pdf_by_content_type(self, mock_get):
+        mock_get.return_value = self._make_response("application/pdf")
+        _, is_pdf = fetch_pdf_bytes("https://example.com/doc")
+        self.assertTrue(is_pdf)
+
+    @patch("monitor.services.requests.get")
+    def test_detects_pdf_by_url_extension(self, mock_get):
+        mock_get.return_value = self._make_response("application/octet-stream", "https://example.com/file.pdf")
+        _, is_pdf = fetch_pdf_bytes("https://example.com/file.pdf")
+        self.assertTrue(is_pdf)
+
+    @patch("monitor.services.requests.get")
+    def test_html_not_detected_as_pdf(self, mock_get):
+        mock_get.return_value = self._make_response("text/html; charset=utf-8")
+        _, is_pdf = fetch_pdf_bytes("https://example.com/page")
+        self.assertFalse(is_pdf)
+
+
+class ExtractPdfTextTest(TestCase):
+    """Tests for extract_pdf_text using a minimal synthetic PDF via pdfplumber."""
+
+    def _make_pdf_bytes(self, pages: list[str]) -> bytes:
+        """Build a minimal valid PDF with one text string per page."""
+        import io as _io
+        try:
+            import reportlab.pdfgen.canvas as rl_canvas
+            buf = _io.BytesIO()
+            c = rl_canvas.Canvas(buf)
+            for text in pages:
+                c.drawString(72, 720, text)
+                c.showPage()
+            c.save()
+            return buf.getvalue()
+        except ImportError:
+            self.skipTest("reportlab not installed; skipping PDF byte generation test")
+
+    def test_extract_returns_string(self):
+        """extract_pdf_text returns a non-empty string for valid PDF bytes."""
+        import io as _io
+        # Use pdfplumber's own test fixture approach: mock page.extract_text
+        with patch("pdfplumber.open") as mock_open:
+            mock_page = MagicMock()
+            mock_page.extract_text.return_value = "Hello World\nThis is a test."
+            mock_pdf = MagicMock()
+            mock_pdf.pages = [mock_page]
+            mock_open.return_value.__enter__.return_value = mock_pdf
+            result = extract_pdf_text(b"fake-pdf-bytes")
+        self.assertIn("Hello World", result)
+        self.assertIn("This is a test.", result)
+
+    def test_repeated_lines_removed(self):
+        """Lines appearing on every page are stripped as headers/footers."""
+        with patch("pdfplumber.open") as mock_open:
+            mock_pages = []
+            for i in range(3):
+                p = MagicMock()
+                p.extract_text.return_value = f"Company Confidential\nPage content {i}\n{i + 1}"
+                mock_pages.append(p)
+            mock_pdf = MagicMock()
+            mock_pdf.pages = mock_pages
+            mock_open.return_value.__enter__.return_value = mock_pdf
+            result = extract_pdf_text(b"fake")
+        # "Company Confidential" appears on all 3 pages → should be stripped
+        self.assertNotIn("Company Confidential", result)
+        # Unique content should remain
+        self.assertIn("Page content 0", result)
+
+    def test_page_numbers_removed(self):
+        """Bare page-number lines are stripped."""
+        with patch("pdfplumber.open") as mock_open:
+            mock_page = MagicMock()
+            mock_page.extract_text.return_value = "Real content here\n3"
+            mock_pdf = MagicMock()
+            mock_pdf.pages = [mock_page]
+            mock_open.return_value.__enter__.return_value = mock_pdf
+            result = extract_pdf_text(b"fake")
+        self.assertIn("Real content here", result)
+        self.assertNotIn("\n3\n", result)
+
+    def test_whitespace_normalised(self):
+        """Internal whitespace within lines is collapsed to a single space."""
+        with patch("pdfplumber.open") as mock_open:
+            mock_page = MagicMock()
+            mock_page.extract_text.return_value = "Too   many    spaces here"
+            mock_pdf = MagicMock()
+            mock_pdf.pages = [mock_page]
+            mock_open.return_value.__enter__.return_value = mock_pdf
+            result = extract_pdf_text(b"fake")
+        self.assertIn("Too many spaces here", result)
+
+    def test_empty_pdf_returns_empty_string(self):
+        """A PDF with no extractable text returns an empty string."""
+        with patch("pdfplumber.open") as mock_open:
+            mock_page = MagicMock()
+            mock_page.extract_text.return_value = ""
+            mock_pdf = MagicMock()
+            mock_pdf.pages = [mock_page]
+            mock_open.return_value.__enter__.return_value = mock_pdf
+            result = extract_pdf_text(b"fake")
+        self.assertEqual(result, "")
+
+
+class FetchDocumentContentPdfTest(TestCase):
+    """Tests that fetch_document_content sets document_format correctly for PDFs."""
+
+    def setUp(self):
+        org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.doc = Document.objects.create(organization=org, url="https://acme.com/policy.pdf")
+
+    @patch("monitor.services.fetch_pdf_bytes")
+    @patch("monitor.services.extract_pdf_text")
+    def test_sets_document_format_pdf(self, mock_extract, mock_fetch):
+        mock_fetch.return_value = (b"%PDF fake", True)
+        mock_extract.return_value = "Extracted PDF text"
+        from monitor.services import fetch_document_content
+        result = fetch_document_content(self.doc)
+        self.assertEqual(result, "Extracted PDF text")
+        self.doc.refresh_from_db()
+        self.assertEqual(self.doc.document_format, Document.DocumentFormat.PDF)
+
+    @patch("monitor.services.fetch_pdf_bytes")
+    def test_sets_document_format_html(self, mock_fetch):
+        mock_fetch.return_value = (b"<html><body><p>Hello</p></body></html>", False)
+        from monitor.services import fetch_document_content
+        fetch_document_content(self.doc)
+        self.doc.refresh_from_db()
+        self.assertEqual(self.doc.document_format, Document.DocumentFormat.HTML)
+
+    @patch("monitor.services.fetch_pdf_bytes")
+    @patch("monitor.services.extract_pdf_text", side_effect=Exception("corrupt PDF"))
+    def test_returns_none_on_pdf_extraction_failure(self, mock_extract, mock_fetch):
+        mock_fetch.return_value = (b"%PDF fake", True)
+        from monitor.services import fetch_document_content
+        result = fetch_document_content(self.doc)
+        self.assertIsNone(result)
 
 
 # ---------------------------------------------------------------------------
