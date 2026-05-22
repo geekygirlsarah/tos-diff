@@ -2,8 +2,30 @@
 
 {% block title %}Recent Changes — TosDiff{% endblock %}
 
+{% block extra_css %}
+<style>
+  .locale-date { display: none; }
+</style>
+{% endblock %}
+
 {% block content %}
-<h1 class="h3 mb-4">{{ page_title }}</h1>
+<div class="alert alert-light border mb-4" role="note">
+  <strong>TosDiff</strong> automatically monitors Terms of Service, Privacy Policies, and other
+  legal documents across the web. When a document changes, a new snapshot is saved so you can
+  see exactly what was added or removed. Use the links above to browse tracked organizations,
+  or explore recent changes below.
+</div>
+
+<div class="d-flex flex-wrap align-items-center gap-2 mb-4">
+  <h1 class="h3 mb-0 me-3">Recent Changes</h1>
+  {% for d in valid_days %}
+  <a href="?days={{ d }}"
+     class="btn btn-sm {% if days == d %}btn-primary{% else %}btn-outline-secondary{% endif %}"
+     aria-current="{% if days == d %}true{% else %}false{% endif %}">
+    Last {{ d }} days
+  </a>
+  {% endfor %}
+</div>
 
 {% if snapshots %}
   <div class="list-group">
@@ -13,18 +35,16 @@
         <h2 class="h6 mb-0">
           <a href="{% url 'monitor:document_detail' snapshot.document.pk %}"
              class="text-decoration-none stretched-link">
-            {{ snapshot.document }}
+            {{ snapshot.document.organization.name }} —
+            {% if snapshot.document.document_type == 'other' and snapshot.document.other_document_type %}{{ snapshot.document.other_document_type }}{% else %}{{ snapshot.document.get_document_type_display }}{% endif %}
           </a>
         </h2>
         <time class="text-muted small text-nowrap ms-3"
-              datetime="{{ snapshot.captured_at|date:'c' }}">
+              datetime="{{ snapshot.captured_at|date:'c' }}"
+              data-utc="{{ snapshot.captured_at|date:'c' }}">
           {{ snapshot.captured_at|date:"Y-m-d H:i" }} UTC
         </time>
       </div>
-      <p class="mb-0 text-muted small">
-        {{ snapshot.document.organization.name }} &mdash;
-        {{ snapshot.document.get_document_type_display }}
-      </p>
     </article>
     {% endfor %}
   </div>
@@ -50,6 +70,6 @@
   {% endif %}
 
 {% else %}
-  <p class="text-muted">No document changes detected in the last 14 days.</p>
+  <p class="text-muted">No document changes detected in the last {{ days }} days.</p>
 {% endif %}
 {% endblock %}

@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block title %}Organizations — TosDiff{% endblock %}
+
+{% block content %}
+<h1 class="h3 mb-4">{{ page_title }}</h1>
+
+{% if organizations %}
+  {% for org in organizations %}
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h2 class="h5 mb-0">
+        <a href="{{ org.website_url }}" target="_blank" rel="noopener noreferrer"
+           class="text-decoration-none">{{ org.name }}</a>
+      </h2>
+    </div>
+    <div class="card-body p-0">
+      {% if org.documents.all %}
+      <ul class="list-group list-group-flush">
+        {% for doc in org.documents.all %}
+        <li class="list-group-item">
+          <a href="{% url 'monitor:document_detail' doc.pk %}" class="text-decoration-none">
+            {% if doc.document_type == 'other' and doc.other_document_type %}{{ doc.other_document_type }}{% else %}{{ doc.get_document_type_display }}{% endif %}
+          </a>
+          {% if doc.language %}
+          <span class="badge bg-secondary ms-2">{{ doc.language.name }}</span>
+          {% endif %}
+          {% if doc.country %}
+          <span class="badge bg-light text-dark ms-1">{{ doc.country.name }}</span>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="text-muted p-3 mb-0">No documents tracked yet.</p>
+      {% endif %}
+
+      {% for subsidiary in org.subsidiaries.all %}{% if subsidiary.documents.all %}
+      <div class="border-top px-3 pt-3 pb-2">
+        <h3 class="h6 text-muted mb-2">
+          <a href="{{ subsidiary.website_url }}" target="_blank" rel="noopener noreferrer"
+             class="text-decoration-none text-muted">{{ subsidiary.name }}</a>
+          <small class="fw-normal">(subsidiary)</small>
+        </h3>
+        {% if subsidiary.documents.all %}
+        <ul class="list-group list-group-flush mb-2">
+          {% for doc in subsidiary.documents.all %}
+          <li class="list-group-item ps-4">
+            <a href="{% url 'monitor:document_detail' doc.pk %}" class="text-decoration-none">
+              {% if doc.document_type == 'other' and doc.other_document_type %}{{ doc.other_document_type }}{% else %}{{ doc.get_document_type_display }}{% endif %}
+            </a>
+            {% if doc.language %}
+            <span class="badge bg-secondary ms-2">{{ doc.language.name }}</span>
+            {% endif %}
+            {% if doc.country %}
+            <span class="badge bg-light text-dark ms-1">{{ doc.country.name }}</span>
+            {% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </div>
+      {% endif %}{% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+{% else %}
+  <p class="text-muted">No organizations have been added yet.</p>
+{% endif %}
+{% endblock %}

@@ -12,7 +12,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from .models import Country, Document, DocumentSnapshot, Language, Organization
+from .models import Country, Document, DocumentSnapshot, Language, Organization, Tag
 from .services import (
     clean_html,
     compute_hash,
@@ -27,6 +27,69 @@ from .services import (
 # ---------------------------------------------------------------------------
 # Model tests
 # ---------------------------------------------------------------------------
+
+class TagModelTest(TestCase):
+    def test_slug_auto_generated(self):
+        tag = Tag.objects.create(name="Open Source")
+        self.assertEqual(tag.slug, "open-source")
+
+    def test_slug_not_overwritten_if_set(self):
+        tag = Tag.objects.create(name="Open Source", slug="custom-tag")
+        self.assertEqual(tag.slug, "custom-tag")
+
+    def test_str(self):
+        tag = Tag(name="Fintech")
+        self.assertEqual(str(tag), "Fintech")
+
+    def test_unique_name(self):
+        Tag.objects.create(name="Unique Tag")
+        with self.assertRaises(Exception):
+            Tag.objects.create(name="Unique Tag")
+
+
+class OrganizationCategoryTagsTest(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name="Acme Corp", website_url="https://acme.com")
+
+    def test_category_default_blank(self):
+        self.assertEqual(self.org.category, "")
+
+    def test_category_can_be_set(self):
+        self.org.category = Organization.Category.TECHNOLOGY
+        self.org.save()
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.category, "technology")
+
+    def test_all_categories_exist(self):
+        expected = [
+            "technology",
+            "financial",
+            "healthcare",
+            "entertainment_streaming",
+            "media",
+            "social_media",
+            "hospitality",
+            "retail",
+            "other",
+        ]
+        actual = [c.value for c in Organization.Category]
+        for value in expected:
+            self.assertIn(value, actual)
+
+    def test_tags_can_be_added(self):
+        tag1 = Tag.objects.create(name="SaaS")
+        tag2 = Tag.objects.create(name="Cloud")
+        self.org.tags.add(tag1, tag2)
+        self.assertEqual(self.org.tags.count(), 2)
+
+    def test_tags_reverse_relation(self):
+        tag = Tag.objects.create(name="E-Commerce")
+        self.org.tags.add(tag)
+        self.assertIn(self.org, tag.organizations.all())
+
+    def test_tags_optional(self):
+        self.assertEqual(self.org.tags.count(), 0)
+
 
 class OrganizationModelTest(TestCase):
     def test_slug_auto_generated(self):
@@ -430,18 +493,22 @@ class FetchAndSnapshotTest(TestCase):
         self.assertFalse(created)
         self.assertIsNone(snapshot)
 
-    @patch("monitor.services.fetch_pdf_bytes", side_effect=requests.RequestException("Network error"))
-    def test_returns_none_on_fetch_error(self, mock_fetch):
+    @patch("monitor.services.fetch_html_playwright", side_effect=Exception("Playwright error"))
+    @patch("monitor.services.requests.get", side_effect=requests.RequestException("Network error"))
+    def test_returns_none_on_fetch_error(self, mock_get, mock_playwright):
         snapshot, created = fetch_and_snapshot(self.doc)
         self.assertIsNone(snapshot)
         self.assertFalse(created)
 
-    def test_raises_for_playwright_method(self):
+    @patch("monitor.services.fetch_html_playwright")
+    def test_playwright_method_calls_playwright(self, mock_playwright):
+        mock_playwright.return_value = "<html><body><p>Terms</p></body></html>"
         self.doc.fetch_method = Document.FetchMethod.PLAYWRIGHT
         self.doc.save()
-        with self.assertRaises(NotImplementedError):
-            from monitor.services import fetch_document_content
-            fetch_document_content(self.doc)
+        from monitor.services import fetch_document_content
+        text, method = fetch_document_content(self.doc)
+        mock_playwright.assert_called_once()
+        self.assertEqual(method, Document.FetchMethod.PLAYWRIGHT)
 
 
 # ---------------------------------------------------------------------------
@@ -569,32 +636,53 @@ class FetchDocumentContentPdfTest(TestCase):
         org = Organization.objects.create(name="Acme", website_url="https://acme.com")
         self.doc = Document.objects.create(organization=org, url="https://acme.com/policy.pdf")
 
-    @patch("monitor.services.fetch_pdf_bytes")
     @patch("monitor.services.extract_pdf_text")
-    def test_sets_document_format_pdf(self, mock_extract, mock_fetch):
-        mock_fetch.return_value = (b"%PDF fake", True)
+    @patch("monitor.services.requests.get")
+    def test_sets_document_format_pdf(self, mock_get, mock_extract):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"Content-Type": "application/pdf"}
+        mock_response.url = "https://acme.com/policy.pdf"
+        mock_response.content = b"%PDF fake"
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
         mock_extract.return_value = "Extracted PDF text"
         from monitor.services import fetch_document_content
-        result = fetch_document_content(self.doc)
-        self.assertEqual(result, "Extracted PDF text")
+        text, method = fetch_document_content(self.doc)
+        self.assertEqual(text, "Extracted PDF text")
         self.doc.refresh_from_db()
         self.assertEqual(self.doc.document_format, Document.DocumentFormat.PDF)
 
-    @patch("monitor.services.fetch_pdf_bytes")
-    def test_sets_document_format_html(self, mock_fetch):
-        mock_fetch.return_value = (b"<html><body><p>Hello</p></body></html>", False)
+    @patch("monitor.services.requests.get")
+    def test_sets_document_format_html(self, mock_get):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"Content-Type": "text/html"}
+        mock_response.url = "https://acme.com/policy"
+        mock_response.content = b"<html><body><p>Hello</p></body></html>"
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+        html_doc = Document.objects.create(
+            organization=self.doc.organization, url="https://acme.com/policy"
+        )
         from monitor.services import fetch_document_content
-        fetch_document_content(self.doc)
-        self.doc.refresh_from_db()
-        self.assertEqual(self.doc.document_format, Document.DocumentFormat.HTML)
+        fetch_document_content(html_doc)
+        html_doc.refresh_from_db()
+        self.assertEqual(html_doc.document_format, Document.DocumentFormat.HTML)
 
-    @patch("monitor.services.fetch_pdf_bytes")
     @patch("monitor.services.extract_pdf_text", side_effect=Exception("corrupt PDF"))
-    def test_returns_none_on_pdf_extraction_failure(self, mock_extract, mock_fetch):
-        mock_fetch.return_value = (b"%PDF fake", True)
+    @patch("monitor.services.requests.get")
+    def test_returns_none_on_pdf_extraction_failure(self, mock_get, mock_extract):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"Content-Type": "application/pdf"}
+        mock_response.url = "https://acme.com/policy.pdf"
+        mock_response.content = b"%PDF fake"
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
         from monitor.services import fetch_document_content
-        result = fetch_document_content(self.doc)
-        self.assertIsNone(result)
+        text, method = fetch_document_content(self.doc)
+        self.assertIsNone(text)
 
 
 # ---------------------------------------------------------------------------
@@ -846,3 +934,160 @@ class RecentChangesViewTest(TestCase):
     def test_homepage_empty_state(self):
         response = self.client.get(reverse("monitor:home"))
         self.assertContains(response, "No document changes detected")
+
+    def test_day_filter_defaults_to_14(self):
+        response = self.client.get(reverse("monitor:home"))
+        self.assertEqual(response.context["days"], 14)
+
+    def test_day_filter_accepts_valid_values(self):
+        for days in (3, 7, 14, 30):
+            response = self.client.get(reverse("monitor:home"), {"days": days})
+            self.assertEqual(response.context["days"], days)
+
+    def test_day_filter_rejects_invalid_value(self):
+        response = self.client.get(reverse("monitor:home"), {"days": 99})
+        self.assertEqual(response.context["days"], 14)
+
+    def test_day_filter_rejects_non_integer(self):
+        response = self.client.get(reverse("monitor:home"), {"days": "abc"})
+        self.assertEqual(response.context["days"], 14)
+
+    def test_day_filter_links_rendered(self):
+        response = self.client.get(reverse("monitor:home"))
+        for days in (3, 7, 14, 30):
+            self.assertContains(response, f"?days={days}")
+
+    def test_3_day_filter_excludes_old_snapshot(self):
+        snap = DocumentSnapshot.objects.create(
+            document=self.doc,
+            cleaned_text="Old content",
+            text_hash=compute_hash("Old content"),
+        )
+        DocumentSnapshot.objects.filter(pk=snap.pk).update(
+            captured_at=timezone.now() - timezone.timedelta(days=5)
+        )
+        response = self.client.get(reverse("monitor:home"), {"days": 3})
+        self.assertContains(response, "No document changes detected")
+
+
+class OrganizationsViewTest(TestCase):
+    def setUp(self):
+        self.parent = Organization.objects.create(name="Meta", website_url="https://meta.com")
+        self.child = Organization.objects.create(
+            name="Instagram", website_url="https://instagram.com", parent=self.parent
+        )
+        self.doc = Document.objects.create(
+            organization=self.parent, url="https://meta.com/tos"
+        )
+        self.child_doc = Document.objects.create(
+            organization=self.child,
+            url="https://instagram.com/tos",
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+        )
+
+    def test_returns_200(self):
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertEqual(response.status_code, 200)
+
+    def test_uses_correct_template(self):
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertTemplateUsed(response, "monitor/organizations.html")
+
+    def test_shows_parent_organization(self):
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertContains(response, "Meta")
+
+    def test_shows_subsidiary(self):
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertContains(response, "Instagram")
+
+    def test_shows_document_link(self):
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertContains(response, f"/document/{self.doc.pk}/")
+
+    def test_child_org_not_listed_as_top_level(self):
+        response = self.client.get(reverse("monitor:organizations"))
+        orgs = list(response.context["organizations"])
+        names = [o.name for o in orgs]
+        self.assertIn("Meta", names)
+        self.assertNotIn("Instagram", names)
+
+    def test_empty_state(self):
+        Organization.objects.all().delete()
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertContains(response, "No organizations have been added yet")
+
+
+class AboutViewTest(TestCase):
+    def test_returns_200(self):
+        response = self.client.get(reverse("monitor:about"))
+        self.assertEqual(response.status_code, 200)
+
+    def test_uses_correct_template(self):
+        response = self.client.get(reverse("monitor:about"))
+        self.assertTemplateUsed(response, "monitor/about.html")
+
+    def test_shows_page_title(self):
+        response = self.client.get(reverse("monitor:about"))
+        self.assertContains(response, "About")
+
+
+class TermsViewTest(TestCase):
+    def test_returns_200(self):
+        self.assertEqual(self.client.get(reverse("monitor:terms")).status_code, 200)
+
+    def test_uses_correct_template(self):
+        self.assertTemplateUsed(self.client.get(reverse("monitor:terms")), "monitor/terms.html")
+
+    def test_shows_heading(self):
+        self.assertContains(self.client.get(reverse("monitor:terms")), "Terms of Use")
+
+
+class PrivacyViewTest(TestCase):
+    def test_returns_200(self):
+        self.assertEqual(self.client.get(reverse("monitor:privacy")).status_code, 200)
+
+    def test_uses_correct_template(self):
+        self.assertTemplateUsed(self.client.get(reverse("monitor:privacy")), "monitor/privacy.html")
+
+    def test_shows_heading(self):
+        self.assertContains(self.client.get(reverse("monitor:privacy")), "Privacy Policy")
+
+
+class OrganizationsViewFilterTest(TestCase):
+    """Tests for the org-with-no-documents filtering."""
+
+    def test_org_without_documents_hidden(self):
+        Organization.objects.create(name="EmptyCorp", website_url="https://empty.com")
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertNotContains(response, "EmptyCorp")
+
+    def test_org_with_only_subsidiary_docs_shown(self):
+        parent = Organization.objects.create(name="HoldCo", website_url="https://holdco.com")
+        child = Organization.objects.create(
+            name="SubCo", website_url="https://subco.com", parent=parent
+        )
+        Document.objects.create(organization=child, url="https://subco.com/tos")
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertContains(response, "HoldCo")
+
+    def test_other_doc_type_shows_custom_name(self):
+        org = Organization.objects.create(name="AcmeCo", website_url="https://acme.com")
+        Document.objects.create(
+            organization=org,
+            url="https://acme.com/other",
+            document_type="other",
+            other_document_type="Community Guidelines",
+        )
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertContains(response, "Community Guidelines")
+        self.assertNotContains(response, "Other")
+
+    def test_subsidiary_without_docs_hidden(self):
+        parent = Organization.objects.create(name="BigCorp", website_url="https://bigcorp.com")
+        Organization.objects.create(
+            name="EmptySub", website_url="https://emptysub.com", parent=parent
+        )
+        Document.objects.create(organization=parent, url="https://bigcorp.com/tos")
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertNotContains(response, "EmptySub")

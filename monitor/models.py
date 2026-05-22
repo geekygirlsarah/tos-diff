@@ -25,10 +25,50 @@ class Language(models.Model):
         return f"{self.name} ({self.code})"
 
 
+class Tag(models.Model):
+    name = models.CharField(max_length=100, unique=True)
+    slug = models.SlugField(max_length=100, unique=True, blank=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self) -> str:
+        return self.name
+
+    def save(self, *args, **kwargs) -> None:
+        if not self.slug:
+            self.slug = slugify(self.name)
+        super().save(*args, **kwargs)
+
+
 class Organization(models.Model):
+    class Category(models.TextChoices):
+        TECHNOLOGY = "technology", "Technology & Software"
+        FINANCIAL = "financial", "Financial Services"
+        HEALTHCARE = "healthcare", "Healthcare & Pharmaceuticals"
+        ENTERTAINMENT_STREAMING = "entertainment_streaming", "Entertainment & Streaming"
+        MEDIA = "media", "Media & Entertainment"
+        SOCIAL_MEDIA = "social_media", "Social Media & Content Platforms"
+        HOSPITALITY = "hospitality", "Hospitality & Hotels"
+        RETAIL = "retail", "Retail & E-Commerce"
+        OTHER = "other", "Other"
+
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=255, unique=True, blank=True)
     website_url = models.URLField(max_length=500)
+    category = models.CharField(
+        max_length=30,
+        choices=Category.choices,
+        blank=True,
+        default="",
+        help_text="Industry category for this organization.",
+    )
+    tags = models.ManyToManyField(
+        Tag,
+        blank=True,
+        related_name="organizations",
+        help_text="Tags for this organization.",
+    )
     parent = models.ForeignKey(
         "self",
         on_delete=models.SET_NULL,

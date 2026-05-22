@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}About — TosDiff{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <h1 class="h3 mb-4">{{ page_title }}</h1>
+
+    <div class="card mb-4">
+      <div class="card-body">
+        <h2 class="h5">What is TosDiff?</h2>
+        <p>
+          TosDiff monitors Terms of Service, Privacy Policies, and other legal documents
+          across websites. It automatically fetches documents on a schedule, detects when
+          they change, and shows you exactly what was added or removed.
+        </p>
+
+        <h2 class="h5 mt-4">How it works</h2>
+        <ul>
+          <li>Documents are fetched periodically using either standard HTTP requests or a
+              headless browser (for JavaScript-heavy pages).</li>
+          <li>Each fetched document is cleaned and normalised into plain text.</li>
+          <li>A SHA-256 hash is computed and compared against the previous snapshot. If
+              the content has changed, a new snapshot is saved.</li>
+          <li>You can browse recent changes on the home page, view the full text of any
+              snapshot, or see a side-by-side diff between two versions.</li>
+        </ul>
+
+        <h2 class="h5 mt-4">Supported document types</h2>
+        <p>
+          Terms of Service, Privacy Policy, Cookie Policy, Refund Policy, Children's
+          Privacy Policy, Subscription Terms, Service Agreement, Service Fees, User
+          Agreement, Code of Conduct, Acceptable Use Policy, DMCA Policy, Payment Service
+          Terms, and more.
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

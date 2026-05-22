@@ -157,34 +157,40 @@ def fetch_html_playwright(
         Navigation timeout in seconds.
     """
     def _run() -> str:
+        from playwright.sync_api import sync_playwright
+
         _rate_limit(url)
-        browser = _get_playwright_browser()
-        context = browser.new_context(
-            user_agent=DEFAULT_HEADERS["User-Agent"],
-            java_script_enabled=True,
-        )
-        try:
-            page = context.new_page()
-            page.goto(url, wait_until="networkidle", timeout=timeout * 1000)
-
-            if wait_for_selector:
-                page.wait_for_selector(wait_for_selector, timeout=timeout * 1000)
-
-            if sleep_seconds > 0:
-                time.sleep(sleep_seconds)
-
-            for selector in (dismiss_selectors or []):
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                context = browser.new_context(
+                    user_agent=DEFAULT_HEADERS["User-Agent"],
+                    java_script_enabled=True,
+                )
                 try:
-                    btn = page.query_selector(selector)
-                    if btn:
-                        btn.click()
-                        time.sleep(0.5)
-                except Exception:  # noqa: BLE001
-                    pass
+                    page = context.new_page()
+                    page.goto(url, wait_until="networkidle", timeout=timeout * 1000)
 
-            return page.content()
-        finally:
-            context.close()
+                    if wait_for_selector:
+                        page.wait_for_selector(wait_for_selector, timeout=timeout * 1000)
+
+                    if sleep_seconds > 0:
+                        time.sleep(sleep_seconds)
+
+                    for selector in (dismiss_selectors or []):
+                        try:
+                            btn = page.query_selector(selector)
+                            if btn:
+                                btn.click()
+                                time.sleep(0.5)
+                        except Exception:  # noqa: BLE001
+                            pass
+
+                    return page.content()
+                finally:
+                    context.close()
+            finally:
+                browser.close()
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(_run).result()

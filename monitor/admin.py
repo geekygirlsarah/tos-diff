@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.utils.html import format_html
 
-from .models import Country, Document, DocumentSnapshot, Language, Organization
+from .models import Country, Document, DocumentSnapshot, Language, Organization, Tag
 
 
 @admin.register(Country)
@@ -16,12 +16,20 @@ class LanguageAdmin(admin.ModelAdmin):
     search_fields = ["name", "code"]
 
 
+@admin.register(Tag)
+class TagAdmin(admin.ModelAdmin):
+    list_display = ["name", "slug"]
+    search_fields = ["name", "slug"]
+    prepopulated_fields = {"slug": ("name",)}
+
+
 @admin.register(Organization)
 class OrganizationAdmin(admin.ModelAdmin):
-    list_display = ["name", "slug", "parent", "website_url_link", "document_count"]
+    list_display = ["name", "slug", "category", "parent", "website_url_link", "document_count"]
+    list_filter = ["category", "tags"]
     search_fields = ["name", "slug", "website_url"]
     prepopulated_fields = {"slug": ("name",)}
-    autocomplete_fields = ["parent"]
+    autocomplete_fields = ["parent", "tags"]
 
     @admin.display(description="Website")
     def website_url_link(self, obj: Organization) -> str:

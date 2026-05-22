@@ -23,6 +23,12 @@
           <li class="nav-item">
             <a class="nav-link" href="{% url 'monitor:home' %}">Recent Changes</a>
           </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{% url 'monitor:organizations' %}">Organizations</a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{% url 'monitor:about' %}">About</a>
+          </li>
         </ul>
       </div>
     </div>
@@ -32,8 +38,41 @@
     {% block content %}{% endblock %}
   </main>
 
+  <footer class="bg-dark text-light py-4 mt-5">
+    <div class="container">
+      <div class="row gy-2 align-items-center">
+        <div class="col-md-6 small">
+          <strong>TosDiff</strong> — open-source legal document change tracker.<br>
+          No user data is collected or shared.
+          &bull; <a href="{% url 'monitor:terms' %}" class="text-light">Terms of Use</a>
+          &bull; <a href="{% url 'monitor:privacy' %}" class="text-light">Privacy Policy</a>
+        </div>
+        <div class="col-md-6 text-md-end small text-muted">
+          Source code:
+          <a href="https://github.com/TBD" target="_blank" rel="noopener noreferrer"
+             class="text-light">GitHub (TBD)</a><br>
+          Last updated: May 2026
+        </div>
+      </div>
+    </div>
+  </footer>
+
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
           integrity="sha384-YvpcrYf0tY3lHB60NNkmXc4s9bIOgUxi8T/jzmFXFMrPwnDMh6e8uxfcmDkiHoqj"
           crossorigin="anonymous"></script>
+  <script>
+    // Replace UTC timestamps with the user's local date/time
+    document.querySelectorAll("time[data-utc]").forEach(function(el) {
+      var utc = el.getAttribute("data-utc");
+      if (!utc) return;
+      var d = new Date(utc);
+      if (isNaN(d)) return;
+      el.textContent = d.toLocaleString(undefined, {
+        year: "numeric", month: "short", day: "numeric",
+        hour: "2-digit", minute: "2-digit"
+      });
+    });
+  </script>
+  {% block extra_js %}{% endblock %}
 </body>
 </html>
