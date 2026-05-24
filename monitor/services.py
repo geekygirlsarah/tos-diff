@@ -7,6 +7,7 @@ management command, a Celery task, or a view.
 import hashlib
 import io
 import logging
+import random
 import re
 import threading
 import time
@@ -76,6 +77,8 @@ def _rate_limit(url: str) -> None:
         wait = RATE_LIMIT_SECONDS - elapsed
         if wait > 0:
             time.sleep(wait)
+        # Add a small random jitter (0-0.5s) to make requests less predictable
+        time.sleep(random.uniform(0, 0.5))
         _domain_last_fetch[domain] = time.monotonic()
 
 

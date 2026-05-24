@@ -894,6 +894,43 @@ class CheckAllDocumentsTaskTest(TestCase):
         self.assertEqual(result["enqueued"], mock_delay.call_count)
 
 
+class CheckAllDocumentsShufflingTest(TestCase):
+    def setUp(self):
+        org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        for i in range(5):
+            Document.objects.create(organization=org, url=f"https://acme.com/{i}")
+
+    @patch("monitor.tasks.random.shuffle")
+    @patch("monitor.tasks.check_document.delay")
+    def test_shuffles_ids(self, mock_delay, mock_shuffle):
+        from monitor.tasks import check_all_documents
+        check_all_documents()
+        self.assertTrue(mock_shuffle.called)
+
+
+class FetchDocumentsCommandTest(TestCase):
+    def setUp(self):
+        org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        for i in range(5):
+            Document.objects.create(organization=org, url=f"https://acme.com/{i}")
+
+    @patch("monitor.management.commands.fetch_documents.random.shuffle")
+    @patch("monitor.management.commands.fetch_documents.fetch_and_snapshot")
+    def test_shuffles_by_default(self, mock_fetch, mock_shuffle):
+        from django.core.management import call_command
+        mock_fetch.return_value = (MagicMock(), False)
+        call_command("fetch_documents")
+        self.assertTrue(mock_shuffle.called)
+
+    @patch("monitor.management.commands.fetch_documents.random.shuffle")
+    @patch("monitor.management.commands.fetch_documents.fetch_and_snapshot")
+    def test_no_shuffle_flag_disables_shuffling(self, mock_fetch, mock_shuffle):
+        from django.core.management import call_command
+        mock_fetch.return_value = (MagicMock(), False)
+        call_command("fetch_documents", shuffle=False)
+        self.assertFalse(mock_shuffle.called)
+
+
 class RecentChangesViewTest(TestCase):
     def setUp(self):
         org = Organization.objects.create(name="Acme", website_url="https://acme.com")

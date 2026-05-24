@@ -9,6 +9,7 @@ Usage:
     python manage.py fetch_documents --async --id 3   # dispatch a single Celery task
 """
 
+import random
 from django.core.management.base import BaseCommand, CommandError
 
 from monitor.models import Document
@@ -36,11 +37,19 @@ class Command(BaseCommand):
             dest="use_celery",
             help="Dispatch Celery tasks instead of running synchronously (requires a running worker).",
         )
+        parser.add_argument(
+            "--no-shuffle",
+            action="store_false",
+            dest="shuffle",
+            default=True,
+            help="Disable shuffling of the document list before processing.",
+        )
 
     def handle(self, *args, **options) -> None:
         document_id: int | None = options["document_id"]
         dry_run: bool = options["dry_run"]
         use_celery: bool = options["use_celery"]
+        shuffle: bool = options["shuffle"]
 
         qs = Document.objects.select_related("organization").filter(is_active=True)
         if document_id is not None:
@@ -52,18 +61,23 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING("No active documents found."))
             return
 
-        total = qs.count()
+        docs = list(qs)
+        total = len(docs)
+        if shuffle and total > 1:
+            self.stdout.write("Shuffling document list...")
+            random.shuffle(docs)
+
         self.stdout.write(f"Found {total} document(s) to process.")
 
         if dry_run:
-            for doc in qs:
+            for doc in docs:
                 self.stdout.write(f"  [dry-run] Would fetch: {doc} — {doc.url}")
             return
 
         if use_celery:
-            self._dispatch_celery(qs)
+            self._dispatch_celery(docs)
         else:
-            self._run_sync(qs, total)
+            self._run_sync(docs, total)
 
     # ------------------------------------------------------------------
     # Helpers

@@ -6,6 +6,7 @@ Beat:     celery -A tosdiff_new beat -l info
 """
 
 import logging
+import random
 
 from celery import shared_task
 from celery.exceptions import MaxRetriesExceededError
@@ -101,6 +102,8 @@ def check_all_documents() -> dict:
     Runs daily at 02:00 UTC via Celery Beat.
     """
     ids = list(Document.objects.filter(is_active=True).values_list("pk", flat=True))
+    if len(ids) > 1:
+        random.shuffle(ids)
     for doc_id in ids:
         check_document.delay(doc_id)
     logger.info("check_all_documents: enqueued %d document(s)", len(ids))
