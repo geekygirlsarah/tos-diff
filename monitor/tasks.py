@@ -57,6 +57,17 @@ def check_document(self, document_id: int) -> dict:
         logger.info("check_document: Document %s is inactive, skipping", document_id)
         return {"document_id": document_id, "created": False, "error": None}
 
+    if doc.is_failing:
+        logger.info("check_document: Document %s is marked as failing, skipping", document_id)
+        return {"document_id": document_id, "created": False, "error": "Document marked as failing"}
+
+    if doc.organization.is_failing:
+        logger.info(
+            "check_document: Organization %s is marked as failing, skipping document %s",
+            doc.organization.name, document_id
+        )
+        return {"document_id": document_id, "created": False, "error": "Organization marked as failing"}
+
     logger.info("check_document: fetching document %s (%s)", document_id, doc.url)
 
     try:
@@ -98,10 +109,16 @@ def check_document(self, document_id: int) -> dict:
 @shared_task(name="monitor.tasks.check_all_documents")
 def check_all_documents() -> dict:
     """
-    Enqueue a check_document task for every active Document.
+    Enqueue a check_document task for every active and non-failing Document.
     Runs daily at 02:00 UTC via Celery Beat.
     """
-    ids = list(Document.objects.filter(is_active=True).values_list("pk", flat=True))
+    ids = list(
+        Document.objects.filter(
+            is_active=True,
+            is_failing=False,
+            organization__is_failing=False,
+        ).values_list("pk", flat=True)
+    )
     if len(ids) > 1:
         random.shuffle(ids)
     for doc_id in ids:

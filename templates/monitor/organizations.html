@@ -20,8 +20,11 @@
         {% for doc in org.documents.all %}
         <li class="list-group-item">
           <a href="{% url 'monitor:document_detail' doc.pk %}" class="text-decoration-none">
-            {% if doc.document_type == 'other' and doc.other_document_type %}{{ doc.other_document_type }}{% else %}{{ doc.get_document_type_display }}{% endif %}
+            {{ doc.display_name }}
           </a>
+          {% if doc.is_failing or org.is_failing %}
+          <span class="badge bg-danger ms-2" title="Retrieval failing">Error</span>
+          {% endif %}
           {% if doc.language %}
           <span class="badge bg-secondary ms-2">{{ doc.language.name }}</span>
           {% endif %}
@@ -47,8 +50,11 @@
           {% for doc in subsidiary.documents.all %}
           <li class="list-group-item ps-4">
             <a href="{% url 'monitor:document_detail' doc.pk %}" class="text-decoration-none">
-              {% if doc.document_type == 'other' and doc.other_document_type %}{{ doc.other_document_type }}{% else %}{{ doc.get_document_type_display }}{% endif %}
+              {{ doc.display_name }}
             </a>
+            {% if doc.is_failing or subsidiary.is_failing %}
+            <span class="badge bg-danger ms-2" title="Retrieval failing">Error</span>
+            {% endif %}
             {% if doc.language %}
             <span class="badge bg-secondary ms-2">{{ doc.language.name }}</span>
             {% endif %}

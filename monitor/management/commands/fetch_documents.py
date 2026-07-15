@@ -44,14 +44,23 @@ class Command(BaseCommand):
             default=True,
             help="Disable shuffling of the document list before processing.",
         )
+        parser.add_argument(
+            "--include-failing",
+            action="store_true",
+            help="Fetch documents even if they or their organization are marked as failing.",
+        )
 
     def handle(self, *args, **options) -> None:
         document_id: int | None = options["document_id"]
         dry_run: bool = options["dry_run"]
         use_celery: bool = options["use_celery"]
         shuffle: bool = options["shuffle"]
+        include_failing: bool = options["include_failing"]
 
         qs = Document.objects.select_related("organization").filter(is_active=True)
+        if not include_failing:
+            qs = qs.filter(is_failing=False, organization__is_failing=False)
+
         if document_id is not None:
             qs = qs.filter(pk=document_id)
             if not qs.exists():

@@ -77,6 +77,10 @@ class Organization(models.Model):
         related_name="subsidiaries",
         help_text="Parent organization, e.g. Meta is the parent of Facebook and Instagram.",
     )
+    is_failing = models.BooleanField(
+        default=False,
+        help_text="Set to True if this organization's documents are consistently failing to fetch.",
+    )
 
     class Meta:
         ordering = ["name"]
@@ -119,6 +123,12 @@ class Document(models.Model):
     organization = models.ForeignKey(
         Organization, on_delete=models.CASCADE, related_name="documents"
     )
+    name = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Custom name for this document. If blank, the category will be used.",
+    )
     document_type = models.CharField(
         max_length=20, choices=DocumentType.choices, default=DocumentType.TERMS_OF_SERVICE
     )
@@ -149,6 +159,10 @@ class Document(models.Model):
     last_checked = models.DateTimeField(null=True, blank=True)
     last_changed = models.DateTimeField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
+    is_failing = models.BooleanField(
+        default=False,
+        help_text="Set to True if this document is consistently failing to fetch.",
+    )
     other_document_type = models.CharField(
         max_length=255,
         blank=True,
@@ -179,8 +193,17 @@ class Document(models.Model):
         ordering = ["organization", "document_type"]
         unique_together = [("organization", "document_type", "url")]
 
+    @property
+    def display_name(self) -> str:
+        """Returns the custom name if set, otherwise falls back to document type/other type."""
+        if self.name:
+            return self.name
+        if self.document_type == self.DocumentType.OTHER and self.other_document_type:
+            return self.other_document_type
+        return self.get_document_type_display()
+
     def __str__(self) -> str:
-        return f"{self.organization.name} — {self.get_document_type_display()}"
+        return f"{self.organization.name} — {self.display_name}"
 
 
 class DocumentSnapshot(models.Model):

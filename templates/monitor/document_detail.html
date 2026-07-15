@@ -17,7 +17,10 @@
       <a href="{{ document.organization.website_url }}" target="_blank" rel="noopener noreferrer">
         {{ document.organization.name }}
       </a>
-      &mdash; {{ document.get_document_type_display }}
+      &mdash; {{ document.display_name }}
+      {% if document.is_failing or document.organization.is_failing %}
+      <span class="badge bg-danger ms-2" title="Retrieval failing">Error: Retrieval Disabled</span>
+      {% endif %}
     </p>
   </div>
   <a href="{{ document.url }}" target="_blank" rel="noopener noreferrer"

@@ -36,7 +36,10 @@
           <a href="{% url 'monitor:document_detail' snapshot.document.pk %}"
              class="text-decoration-none stretched-link">
             {{ snapshot.document.organization.name }} —
-            {% if snapshot.document.document_type == 'other' and snapshot.document.other_document_type %}{{ snapshot.document.other_document_type }}{% else %}{{ snapshot.document.get_document_type_display }}{% endif %}
+            {{ snapshot.document.display_name }}
+            {% if snapshot.document.is_failing or snapshot.document.organization.is_failing %}
+              <span class="badge bg-danger ms-2" title="Retrieval failing">Error</span>
+            {% endif %}
           </a>
         </h2>
         <time class="text-muted small text-nowrap ms-3"

@@ -25,8 +25,8 @@ class TagAdmin(admin.ModelAdmin):
 
 @admin.register(Organization)
 class OrganizationAdmin(admin.ModelAdmin):
-    list_display = ["name", "slug", "category", "parent", "website_url_link", "document_count"]
-    list_filter = ["category", "tags"]
+    list_display = ["name", "slug", "category", "parent", "is_failing", "website_url_link", "document_count"]
+    list_filter = ["category", "is_failing", "tags"]
     search_fields = ["name", "slug", "website_url"]
     prepopulated_fields = {"slug": ("name",)}
     autocomplete_fields = ["parent", "tags"]
@@ -56,21 +56,45 @@ class DocumentSnapshotInline(admin.TabularInline):
 class DocumentAdmin(admin.ModelAdmin):
     list_display = [
         "organization",
+        "display_name",
         "document_type",
         "language",
         "country",
         "fetch_method",
         "url_link",
-        "last_checked",
-        "last_changed",
         "is_active",
+        "is_failing",
     ]
-    list_filter = ["document_type", "language", "country", "fetch_method", "is_active", "organization"]
-    search_fields = ["organization__name", "url"]
+    list_filter = [
+        "document_type",
+        "language",
+        "country",
+        "fetch_method",
+        "is_active",
+        "is_failing",
+        "organization",
+    ]
+    search_fields = ["organization__name", "name", "url"]
     list_select_related = ["organization"]
     readonly_fields = ["last_checked", "last_changed"]
     fieldsets = [
-        (None, {"fields": ["organization", "document_type", "other_document_type", "language", "country", "url", "fetch_method", "is_active"]}),
+        (
+            None,
+            {
+                "fields": [
+                    "organization",
+                    "name",
+                    "document_type",
+                    "other_document_type",
+                    "language",
+                    "country",
+                    "url",
+                    "fetch_method",
+                    "is_active",
+                    "is_failing",
+                ]
+            },
+        ),
         ("Timestamps", {"fields": ["last_checked", "last_changed"], "classes": ["collapse"]}),
         (
             "Extraction settings",
