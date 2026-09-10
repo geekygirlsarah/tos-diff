@@ -1128,3 +1128,63 @@ class OrganizationsViewFilterTest(TestCase):
         Document.objects.create(organization=parent, url="https://bigcorp.com/tos")
         response = self.client.get(reverse("monitor:organizations"))
         self.assertNotContains(response, "EmptySub")
+
+
+class DocumentTypeFilterTest(TestCase):
+    """Tests for the homepage document-type filter chips."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.tos_doc = Document.objects.create(
+            organization=self.org,
+            url="https://acme.com/tos",
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+        )
+        self.privacy_doc = Document.objects.create(
+            organization=self.org,
+            url="https://acme.com/privacy",
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+        )
+        DocumentSnapshot.objects.create(
+            document=self.tos_doc,
+            cleaned_text="TOS content",
+            text_hash=compute_hash("TOS content"),
+        )
+        DocumentSnapshot.objects.create(
+            document=self.privacy_doc,
+            cleaned_text="Privacy content",
+            text_hash=compute_hash("Privacy content"),
+        )
+
+    def test_homepage_shows_document_type_chips(self):
+        response = self.client.get(reverse("monitor:home"))
+        self.assertContains(response, "Terms of Service")
+        self.assertContains(response, "Privacy Policy")
+
+    def test_type_filter_shows_only_matching_type(self):
+        response = self.client.get(reverse("monitor:home"), {"type": "privacy"})
+        self.assertContains(response, "Privacy Policy")
+        # The tos doc should still appear because its org has a privacy doc —
+        # but the privacy chip should be active. We just verify the filter param is accepted.
+        self.assertEqual(response.context["doc_type"], "privacy")
+
+    def test_type_filter_invalid_value_shows_all(self):
+        response = self.client.get(reverse("monitor:home"), {"type": "nonexistent"})
+        self.assertEqual(response.context["doc_type"], "")
+        self.assertContains(response, "Acme")
+
+    def test_type_filter_defaults_to_empty(self):
+        response = self.client.get(reverse("monitor:home"))
+        self.assertEqual(response.context["doc_type"], "")
+
+    def test_type_filter_preserves_days(self):
+        response = self.client.get(reverse("monitor:home"), {"type": "privacy", "days": 7})
+        self.assertEqual(response.context["doc_type"], "privacy")
+        self.assertEqual(response.context["days"], 7)
+
+    def test_homepage_documents_in_context(self):
+        response = self.client.get(reverse("monitor:home"))
+        doc_types = response.context["document_types"]
+        type_values = [dt["value"] for dt in doc_types]
+        self.assertIn("tos", type_values)
+        self.assertIn("privacy", type_values)

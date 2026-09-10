@@ -33,3 +33,8 @@ omit = [
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.6",
+]

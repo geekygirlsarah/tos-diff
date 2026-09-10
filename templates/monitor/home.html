@@ -2,53 +2,81 @@
 
 {% block title %}Recent Changes — TosDiff{% endblock %}
 
-{% block extra_css %}
-<style>
-  .locale-date { display: none; }
-</style>
-{% endblock %}
-
 {% block content %}
-<div class="alert alert-light border mb-4" role="note">
-  <strong>TosDiff</strong> automatically monitors Terms of Service, Privacy Policies, and other
-  legal documents across the web. When a document changes, a new snapshot is saved so you can
-  see exactly what was added or removed. Use the links above to browse tracked organizations,
-  or explore recent changes below.
+<div class="td-hero">
+  <h1 class="h3 mb-2">Track legal document changes</h1>
+  <p class="mb-0">
+    TosDiff monitors Terms of Service, Privacy Policies, and other legal documents
+    across the web. When content changes, you can see exactly what was added or removed.
+  </p>
 </div>
 
+<div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+  <span class="small fw-semibold me-1" style="color: var(--td-text-muted);">Time range:</span>
+  <a href="?days=3{% if doc_type %}&amp;type={{ doc_type }}{% endif %}"
+     class="td-chip {% if days == 3 %}active{% endif %}"
+     aria-current="{% if days == 3 %}true{% else %}false{% endif %}">3 days</a>
+  <a href="?days=7{% if doc_type %}&amp;type={{ doc_type }}{% endif %}"
+     class="td-chip {% if days == 7 %}active{% endif %}"
+     aria-current="{% if days == 7 %}true{% else %}false{% endif %}">7 days</a>
+  <a href="?days=14{% if doc_type %}&amp;type={{ doc_type }}{% endif %}"
+     class="td-chip {% if days == 14 %}active{% endif %}"
+     aria-current="{% if days == 14 %}true{% else %}false{% endif %}">14 days</a>
+  <a href="?days=30{% if doc_type %}&amp;type={{ doc_type }}{% endif %}"
+     class="td-chip {% if days == 30 %}active{% endif %}"
+     aria-current="{% if days == 30 %}true{% else %}false{% endif %}">30 days</a>
+</div>
+
+{% if document_types %}
 <div class="d-flex flex-wrap align-items-center gap-2 mb-4">
-  <h1 class="h3 mb-0 me-3">Recent Changes</h1>
-  {% for d in valid_days %}
-  <a href="?days={{ d }}"
-     class="btn btn-sm {% if days == d %}btn-primary{% else %}btn-outline-secondary{% endif %}"
-     aria-current="{% if days == d %}true{% else %}false{% endif %}">
-    Last {{ d }} days
+  <span class="small fw-semibold me-1" style="color: var(--td-text-muted);">Document type:</span>
+  <a href="?days={{ days }}" class="td-chip {% if not doc_type %}active{% endif %}"
+     aria-current="{% if not doc_type %}true{% else %}false{% endif %}">All</a>
+  {% for dt in document_types %}
+  <a href="?days={{ days }}&amp;type={{ dt.value }}"
+     class="td-chip {% if doc_type == dt.value %}active{% endif %}"
+     aria-current="{% if doc_type == dt.value %}true{% else %}false{% endif %}">
+    {{ dt.label }}
   </a>
   {% endfor %}
 </div>
+{% endif %}
 
 {% if snapshots %}
-  <div class="list-group">
+  <div class="d-flex flex-column gap-3">
     {% for snapshot in snapshots %}
-    <article class="list-group-item list-group-item-action flex-column align-items-start py-3">
-      <div class="d-flex w-100 justify-content-between align-items-center mb-1">
-        <h2 class="h6 mb-0">
-          <a href="{% url 'monitor:document_detail' snapshot.document.pk %}"
-             class="text-decoration-none stretched-link">
-            {{ snapshot.document.organization.name }} —
-            {{ snapshot.document.display_name }}
-            {% if snapshot.document.is_failing or snapshot.document.organization.is_failing %}
-              <span class="badge bg-danger ms-2" title="Retrieval failing">Error</span>
+    <a href="{% url 'monitor:document_detail' snapshot.document.pk %}"
+       class="td-card td-card-link p-3">
+      <div class="d-flex justify-content-between align-items-start gap-3">
+        <div class="min-width-0">
+          <div class="d-flex align-items-center gap-2 flex-wrap mb-1">
+            <span class="fw-semibold">{{ snapshot.document.organization.name }}</span>
+            <span style="color: var(--td-text-muted);">&mdash;</span>
+            <span>{{ snapshot.document.display_name }}</span>
+            {% if snapshot.document.document_type == "tos" %}
+              <span class="td-badge td-badge-tos">Terms of Service</span>
+            {% elif snapshot.document.document_type == "privacy" %}
+              <span class="td-badge td-badge-privacy">Privacy Policy</span>
+            {% elif snapshot.document.document_type == "cookie" %}
+              <span class="td-badge td-badge-cookie">Cookie Policy</span>
+            {% elif snapshot.document.document_type == "other" %}
+              <span class="td-badge td-badge-other">{{ snapshot.document.other_document_type|default:"Other" }}</span>
+            {% else %}
+              <span class="td-badge td-badge-other">{{ snapshot.document.get_document_type_display }}</span>
             {% endif %}
-          </a>
-        </h2>
-        <time class="text-muted small text-nowrap ms-3"
+            {% if snapshot.document.is_failing or snapshot.document.organization.is_failing %}
+              <span class="td-badge td-badge-error">Error</span>
+            {% endif %}
+          </div>
+        </div>
+        <time class="small text-nowrap flex-shrink-0"
+              style="color: var(--td-text-muted);"
               datetime="{{ snapshot.captured_at|date:'c' }}"
               data-utc="{{ snapshot.captured_at|date:'c' }}">
           {{ snapshot.captured_at|date:"Y-m-d H:i" }} UTC
         </time>
       </div>
-    </article>
+    </a>
     {% endfor %}
   </div>
 
@@ -57,7 +85,7 @@
     <ul class="pagination justify-content-center">
       {% if page_obj.has_previous %}
       <li class="page-item">
-        <a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a>
+        <a class="page-link" href="?page={{ page_obj.previous_page_number }}&amp;days={{ days }}{% if doc_type %}&amp;type={{ doc_type }}{% endif %}">Previous</a>
       </li>
       {% endif %}
       <li class="page-item disabled">
@@ -65,7 +93,7 @@
       </li>
       {% if page_obj.has_next %}
       <li class="page-item">
-        <a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a>
+        <a class="page-link" href="?page={{ page_obj.next_page_number }}&amp;days={{ days }}{% if doc_type %}&amp;type={{ doc_type }}{% endif %}">Next</a>
       </li>
       {% endif %}
     </ul>
@@ -73,6 +101,6 @@
   {% endif %}
 
 {% else %}
-  <p class="text-muted">No document changes detected in the last {{ days }} days.</p>
+  <p style="color: var(--td-text-muted);">No document changes detected in the last {{ days }} days.</p>
 {% endif %}
 {% endblock %}

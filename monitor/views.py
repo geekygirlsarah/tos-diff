@@ -22,21 +22,44 @@ class RecentChangesView(ListView):
             days = 14
         return days if days in VALID_DAYS else 14
 
-    def get_queryset(self):
+    def _get_doc_type(self) -> str:
+        doc_type = self.request.GET.get("type", "")
+        valid_types = {choice[0] for choice in Document.DocumentType.choices}
+        return doc_type if doc_type in valid_types else ""
+
+    def _base_queryset(self):
         days = self._get_days()
         cutoff = timezone.now() - timezone.timedelta(days=days)
-        return (
-            DocumentSnapshot.objects.filter(captured_at__gte=cutoff)
-            .select_related("document__organization")
-            .order_by("-captured_at")
+        return DocumentSnapshot.objects.filter(captured_at__gte=cutoff).select_related(
+            "document__organization"
         )
+
+    def get_queryset(self):
+        qs = self._base_queryset().order_by("-captured_at")
+        doc_type = self._get_doc_type()
+        if doc_type:
+            qs = qs.filter(document__document_type=doc_type)
+        return qs
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         days = self._get_days()
+        doc_type = self._get_doc_type()
         context["days"] = days
         context["valid_days"] = VALID_DAYS
+        context["doc_type"] = doc_type
         context["page_title"] = f"Recent Changes (last {days} days)"
+
+        # Distinct document types present in the current time-window
+        type_values = (
+            self._base_queryset()
+            .values_list("document__document_type", flat=True)
+            .distinct()
+            .order_by("document__document_type")
+        )
+        context["document_types"] = [
+            {"value": tv, "label": Document.DocumentType(tv).label} for tv in type_values
+        ]
         return context
 
 

@@ -13,66 +13,72 @@
 <div class="d-flex justify-content-between align-items-start mb-4 flex-wrap gap-2">
   <div>
     <h1 class="h3 mb-1">{{ document }}</h1>
-    <p class="text-muted mb-0">
-      <a href="{{ document.organization.website_url }}" target="_blank" rel="noopener noreferrer">
+    <p class="mb-0" style="color: var(--td-text-muted);">
+      <a href="{{ document.organization.website_url }}" target="_blank" rel="noopener noreferrer"
+         style="color: var(--td-primary);">
         {{ document.organization.name }}
       </a>
       &mdash; {{ document.display_name }}
       {% if document.is_failing or document.organization.is_failing %}
-      <span class="badge bg-danger ms-2" title="Retrieval failing">Error: Retrieval Disabled</span>
+      <span class="td-badge td-badge-error ms-2" title="Retrieval failing">Error: Retrieval Disabled</span>
       {% endif %}
     </p>
   </div>
   <a href="{{ document.url }}" target="_blank" rel="noopener noreferrer"
-     class="btn btn-outline-secondary btn-sm">
+     class="btn btn-sm" style="border: 1px solid var(--td-border); color: var(--td-text-muted);">
     View live document ↗
   </a>
 </div>
 
 {% if snapshot_pairs %}
 <h2 class="h5 mb-3">Snapshot timeline</h2>
-<div class="table-responsive">
-  <table class="table table-hover align-middle">
-    <thead class="table-light">
-      <tr>
-        <th scope="col">Captured</th>
-        <th scope="col">Hash (first 12)</th>
-        <th scope="col" class="text-end">Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for snap, older in snapshot_pairs %}
-      <tr>
-        <td>
-          <time datetime="{{ snap.captured_at|date:'c' }}">
-            {{ snap.captured_at|date:"Y-m-d H:i" }} UTC
-          </time>
-        </td>
-        <td>
-          <code class="text-muted small">{{ snap.text_hash|slice:":12" }}</code>
-        </td>
-        <td class="text-end">
-          <a href="{% url 'monitor:snapshot_text' document.pk snap.pk %}"
-             class="btn btn-sm btn-outline-primary me-1">
-            Full text
-          </a>
-          {% if older %}
-          <a href="{% url 'monitor:snapshot_diff' document.pk older.pk snap.pk %}"
-             class="btn btn-sm btn-outline-secondary">
-            Diff vs previous
-          </a>
-          {% else %}
-          <span class="btn btn-sm btn-outline-secondary disabled" aria-disabled="true">
-            No previous
-          </span>
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<div class="td-card">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead>
+        <tr style="background: var(--td-primary-light);">
+          <th scope="col" class="border-0">Captured</th>
+          <th scope="col" class="border-0">Hash (first 12)</th>
+          <th scope="col" class="border-0 text-end">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for snap, older in snapshot_pairs %}
+        <tr>
+          <td>
+            <time datetime="{{ snap.captured_at|date:'c' }}">
+              {{ snap.captured_at|date:"Y-m-d H:i" }} UTC
+            </time>
+          </td>
+          <td>
+            <code style="color: var(--td-text-muted); font-size: 0.82rem;">{{ snap.text_hash|slice:":12" }}</code>
+          </td>
+          <td class="text-end">
+            <a href="{% url 'monitor:snapshot_text' document.pk snap.pk %}"
+               class="btn btn-sm me-1"
+               style="border: 1px solid var(--td-primary); color: var(--td-primary);">
+              Full text
+            </a>
+            {% if older %}
+            <a href="{% url 'monitor:snapshot_diff' document.pk older.pk snap.pk %}"
+               class="btn btn-sm"
+               style="border: 1px solid var(--td-border); color: var(--td-text-muted);">
+              Diff vs previous
+            </a>
+            {% else %}
+            <span class="btn btn-sm disabled" aria-disabled="true"
+                  style="border: 1px solid var(--td-border); color: var(--td-text-muted); opacity: 0.5;">
+              No previous
+            </span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </div>
 {% else %}
-<p class="text-muted">No snapshots captured yet for this document.</p>
+<p style="color: var(--td-text-muted);">No snapshots captured yet for this document.</p>
 {% endif %}
 {% endblock %}
