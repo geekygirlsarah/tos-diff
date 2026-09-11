@@ -9,15 +9,18 @@ import io
 import logging
 import random
 import re
+import secrets
 import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
 
 import pdfplumber
 import requests
 from bs4 import BeautifulSoup, Tag
+from django.conf import settings
+from django.core.mail import send_mail
+from django.urls import reverse
 from django.utils import timezone
 
 from .models import Document, DocumentSnapshot
@@ -26,22 +29,30 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 30  # seconds
 DEFAULT_HEADERS = {
-    "User-Agent": (
-        "TosDiff-Monitor/1.0 (document change tracker; "
-        "contact your-email@example.com)"
-    )
+    "User-Agent": ("TosDiff-Monitor/1.0 (document change tracker; contact your-email@example.com)")
 }
 
 # Tags always stripped before extraction
 _STRIP_TAGS = [
-    "script", "style", "noscript", "head",
-    "nav", "footer", "iframe", "aside", "form",
+    "script",
+    "style",
+    "noscript",
+    "head",
+    "nav",
+    "footer",
+    "iframe",
+    "aside",
+    "form",
 ]
 
 # Heading level → markdown prefix
 _HEADING_PREFIX = {
-    "h1": "# ", "h2": "## ", "h3": "### ",
-    "h4": "#### ", "h5": "##### ", "h6": "###### ",
+    "h1": "# ",
+    "h2": "## ",
+    "h3": "### ",
+    "h4": "#### ",
+    "h5": "##### ",
+    "h6": "###### ",
 }
 
 
@@ -58,6 +69,7 @@ RATE_LIMIT_SECONDS = 1.0
 def _get_domain(url: str) -> str:
     """Extract the netloc (domain) from *url*."""
     from urllib.parse import urlparse
+
     return urlparse(url).netloc
 
 
@@ -88,7 +100,7 @@ def _rate_limit(url: str) -> None:
 
 _playwright_lock = threading.Lock()
 _playwright_instance = None  # playwright context manager
-_playwright_browser = None   # Browser instance
+_playwright_browser = None  # Browser instance
 
 
 def _get_playwright_browser():
@@ -97,6 +109,7 @@ def _get_playwright_browser():
     with _playwright_lock:
         if _playwright_browser is None or not _playwright_browser.is_connected():
             from playwright.sync_api import sync_playwright
+
             _playwright_instance = sync_playwright().__enter__()
             _playwright_browser = _playwright_instance.chromium.launch(headless=True)
     return _playwright_browser
@@ -135,9 +148,9 @@ def fetch_html(url: str, timeout: int = DEFAULT_TIMEOUT) -> str:
 
 def fetch_html_playwright(
     url: str,
-    wait_for_selector: Optional[str] = None,
+    wait_for_selector: str | None = None,
     sleep_seconds: float = 0.0,
-    dismiss_selectors: Optional[list[str]] = None,
+    dismiss_selectors: list[str] | None = None,
     timeout: int = DEFAULT_TIMEOUT,
 ) -> str:
     """
@@ -159,6 +172,7 @@ def fetch_html_playwright(
     timeout:
         Navigation timeout in seconds.
     """
+
     def _run() -> str:
         from playwright.sync_api import sync_playwright
 
@@ -180,7 +194,7 @@ def fetch_html_playwright(
                     if sleep_seconds > 0:
                         time.sleep(sleep_seconds)
 
-                    for selector in (dismiss_selectors or []):
+                    for selector in dismiss_selectors or []:
                         try:
                             btn = page.query_selector(selector)
                             if btn:
@@ -249,6 +263,7 @@ def extract_pdf_text(pdf_bytes: bytes) -> str:
     repeated: set[str] = set()
     if len(per_page_lines) >= 2:
         from collections import Counter
+
         line_counts: Counter[str] = Counter()
         for page_lines in per_page_lines:
             for ln in set(page_lines):  # count once per page
@@ -292,10 +307,29 @@ def _node_to_lines(tag: Tag) -> list[str]:
     """
     INLINE_TAGS = {"strong", "b", "em", "i", "a", "span", "code", "abbr", "time"}
     BLOCK_TAGS = {
-        "p", "div", "section", "article", "main", "header",
-        "blockquote", "pre", "table", "tr", "td", "th",
-        "h1", "h2", "h3", "h4", "h5", "h6",
-        "ul", "ol", "li", "br", "hr",
+        "p",
+        "div",
+        "section",
+        "article",
+        "main",
+        "header",
+        "blockquote",
+        "pre",
+        "table",
+        "tr",
+        "td",
+        "th",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "ul",
+        "ol",
+        "li",
+        "br",
+        "hr",
     }
 
     lines: list[str] = []
@@ -398,7 +432,7 @@ def _node_to_lines(tag: Tag) -> list[str]:
 
 def extract_text(
     html: str,
-    extra_selectors: Optional[list[str]] = None,
+    extra_selectors: list[str] | None = None,
 ) -> str:
     """
     Convert raw HTML to a clean, markdown-like plain-text representation
@@ -444,12 +478,7 @@ def extract_text(
                 el.decompose()
 
     # Find the best content root: <main>, <article>, or <body>
-    root: Tag = (
-        soup.find("main")
-        or soup.find("article")
-        or soup.find("body")
-        or soup
-    )
+    root: Tag = soup.find("main") or soup.find("article") or soup.find("body") or soup
 
     lines = _node_to_lines(root)
 
@@ -485,7 +514,7 @@ def compute_hash(text: str) -> str:
 _PLAYWRIGHT_RETRY_STATUSES = {403, 429}
 
 
-def fetch_document_content(document: Document) -> tuple[Optional[str], str]:
+def fetch_document_content(document: Document) -> tuple[str | None, str]:
     """
     Fetch and clean the content for *document*.
 
@@ -506,14 +535,12 @@ def fetch_document_content(document: Document) -> tuple[Optional[str], str]:
     """
     # Parse per-document custom selectors (one per line, blank lines ignored)
     extra_selectors: list[str] = [
-        s.strip()
-        for s in (document.custom_selectors or "").splitlines()
-        if s.strip()
+        s.strip() for s in (document.custom_selectors or "").splitlines() if s.strip()
     ]
 
     # Playwright config from fetch_config JSON field
     cfg = document.fetch_config or {}
-    wait_for_selector: Optional[str] = cfg.get("wait_for_selector")
+    wait_for_selector: str | None = cfg.get("wait_for_selector")
     sleep_seconds: float = float(cfg.get("sleep_seconds", 0))
     dismiss_selectors: list[str] = cfg.get("dismiss_selectors") or []
 
@@ -525,13 +552,12 @@ def fetch_document_content(document: Document) -> tuple[Optional[str], str]:
     if not use_playwright:
         try:
             _rate_limit(document.url)
-            response = requests.get(
-                document.url, headers=DEFAULT_HEADERS, timeout=DEFAULT_TIMEOUT
-            )
+            response = requests.get(document.url, headers=DEFAULT_HEADERS, timeout=DEFAULT_TIMEOUT)
             if response.status_code in _PLAYWRIGHT_RETRY_STATUSES:
                 logger.info(
                     "fetch_document_content: %s returned %s — will retry with Playwright",
-                    document.url, response.status_code,
+                    document.url,
+                    response.status_code,
                 )
                 use_playwright = True
             else:
@@ -545,9 +571,7 @@ def fetch_document_content(document: Document) -> tuple[Optional[str], str]:
                         text = extract_pdf_text(response.content)
                         return text or None, Document.FetchMethod.REQUESTS
                     except Exception as exc:
-                        logger.error(
-                            "Failed to extract PDF text from %s: %s", document.url, exc
-                        )
+                        logger.error("Failed to extract PDF text from %s: %s", document.url, exc)
                         return None, Document.FetchMethod.REQUESTS
 
                 html = response.content.decode("utf-8", errors="replace")
@@ -589,15 +613,15 @@ def fetch_document_content(document: Document) -> tuple[Optional[str], str]:
             document.document_format = Document.DocumentFormat.HTML
             return text or None, Document.FetchMethod.PLAYWRIGHT
         except Exception as exc:
-            logger.error(
-                "Failed to fetch %s via Playwright: %s", document.url, exc
-            )
+            logger.error("Failed to fetch %s via Playwright: %s", document.url, exc)
             return None, Document.FetchMethod.PLAYWRIGHT
 
     return None, Document.FetchMethod.REQUESTS
 
 
-def create_snapshot_if_changed(document: Document, cleaned_text: str) -> tuple[Optional[DocumentSnapshot], bool]:
+def create_snapshot_if_changed(
+    document: Document, cleaned_text: str
+) -> tuple[DocumentSnapshot | None, bool]:
     """
     Compare *cleaned_text* against the latest snapshot for *document*.
 
@@ -627,7 +651,7 @@ def create_snapshot_if_changed(document: Document, cleaned_text: str) -> tuple[O
     return snapshot, True
 
 
-def fetch_and_snapshot(document: Document) -> tuple[Optional[DocumentSnapshot], bool]:
+def fetch_and_snapshot(document: Document) -> tuple[DocumentSnapshot | None, bool]:
     """
     High-level entry point: fetch content for *document* and snapshot if changed.
 
@@ -648,3 +672,90 @@ def fetch_and_snapshot(document: Document) -> tuple[Optional[DocumentSnapshot], 
     if cleaned_text is None:
         return None, False
     return create_snapshot_if_changed(document, cleaned_text)
+
+
+# ---------------------------------------------------------------------------
+# Authentication — passwordless one-time login codes
+# ---------------------------------------------------------------------------
+
+LOGIN_CODE_TTL_MINUTES = 10
+
+
+def generate_login_code() -> str:
+    """Return a random, six-digit, zero-padded one-time login code."""
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def send_login_code_email(email: str, code: str, ttl_minutes: int = LOGIN_CODE_TTL_MINUTES) -> None:
+    """Email a one-time login *code* to *email*."""
+    subject = "Your TosDiff login code"
+    message = (
+        "Hi,\n\n"
+        f"Your one-time TosDiff login code is: {code}\n\n"
+        f"It expires in {ttl_minutes} minutes.\n\n"
+        "If you didn't request this code, you can safely ignore this email."
+    )
+    send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [email])
+
+
+# ---------------------------------------------------------------------------
+# Change notification emails
+# ---------------------------------------------------------------------------
+
+
+def build_snapshot_change_message(
+    document: Document,
+    snapshot: DocumentSnapshot,
+    old_snapshot: DocumentSnapshot | None,
+    site_url: str,
+) -> tuple[str, str, str]:
+    """
+    Build the ``(subject, plain_body, html_body)`` for a change notification.
+
+    Links are absolute, based on *site_url*, so the message is safe to send
+    from a Celery task (where no request/host is available).
+    """
+    base = site_url.rstrip("/")
+    detail_url = base + reverse("monitor:document_detail", args=[document.pk])
+    diff_url: str | None = None
+    if old_snapshot is not None:
+        diff_url = base + reverse(
+            "monitor:snapshot_diff",
+            args=[document.pk, old_snapshot.pk, snapshot.pk],
+        )
+
+    subject = f"[TosDiff] {document.organization.name} — {document.display_name} changed"
+
+    plain_lines = [
+        "TosDiff detected a change to a document you're subscribed to.",
+        "",
+        f"Organization: {document.organization.name}",
+        f"Document: {document.display_name}",
+        f"Captured: {snapshot.captured_at:%Y-%m-%d %H:%M UTC}",
+        "",
+        f"View the document: {detail_url}",
+    ]
+    if diff_url is not None:
+        plain_lines.append(f"See what changed: {diff_url}")
+    plain_lines += [
+        "",
+        "You're receiving this because you subscribed to updates. "
+        "Manage your subscriptions in your TosDiff account.",
+    ]
+    plain_body = "\n".join(plain_lines)
+
+    diff_html = f'<p><a href="{diff_url}">See what changed</a></p>' if diff_url else ""
+    html_body = (
+        "<html><body>"
+        "<p>TosDiff detected a change to a document you're subscribed to.</p>"
+        f"<p><strong>{document.organization.name}</strong> — {document.display_name}<br>"
+        f"Captured: {snapshot.captured_at:%Y-%m-%d %H:%M UTC}</p>"
+        f'<p><a href="{detail_url}">View the document</a></p>'
+        f"{diff_html}"
+        '<p style="color:#64748b;font-size:12px;">'
+        "You're receiving this because you subscribed to updates. "
+        "Manage your subscriptions in your TosDiff account.</p>"
+        "</body></html>"
+    )
+
+    return subject, plain_body, html_body

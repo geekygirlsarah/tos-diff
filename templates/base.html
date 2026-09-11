@@ -126,8 +126,20 @@
             <a class="nav-link" href="{% url 'monitor:organizations' %}">Organizations</a>
           </li>
           <li class="nav-item">
+            <a class="nav-link" href="{% url 'monitor:suggest' %}">Suggest a site</a>
+          </li>
+          <li class="nav-item">
             <a class="nav-link" href="{% url 'monitor:about' %}">About</a>
           </li>
+          {% if user.is_authenticated %}
+          <li class="nav-item">
+            <a class="nav-link" href="{% url 'monitor:account' %}">Account</a>
+          </li>
+          {% else %}
+          <li class="nav-item">
+            <a class="nav-link" href="{% url 'monitor:login_request' %}">Log in</a>
+          </li>
+          {% endif %}
         </ul>
       </div>
     </div>

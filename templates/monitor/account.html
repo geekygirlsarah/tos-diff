@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+
+{% block title %}Your account — TosDiff{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+      <h1 class="h3 mb-0">{{ page_title }}</h1>
+      <form method="post" action="{% url 'monitor:logout' %}">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm"
+                style="border: 1px solid var(--td-border); color: var(--td-text-muted);">
+          Log out
+        </button>
+      </form>
+    </div>
+
+    <p class="mb-4" style="color: var(--td-text-muted);">
+      Logged in as <strong>{{ request.user.email }}</strong>.
+    </p>
+
+    <h2 class="h5 mb-3" style="color: var(--td-primary-dark);">Document subscriptions</h2>
+    {% if document_subscriptions %}
+      <div class="td-card mb-4">
+        <div class="table-responsive">
+          <table class="table table-hover align-middle mb-0">
+            <thead>
+              <tr style="background: var(--td-primary-light);">
+                <th scope="col" class="border-0">Organization</th>
+                <th scope="col" class="border-0">Document</th>
+                <th scope="col" class="border-0 text-end">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for sub in document_subscriptions %}
+              <tr>
+                <td>
+                  <a href="{% url 'monitor:document_detail' sub.document.pk %}"
+                     style="color: var(--td-primary);">
+                    {{ sub.document.organization.name }}
+                  </a>
+                </td>
+                <td>{{ sub.document.display_name }}</td>
+                <td class="text-end">
+                  <form method="post"
+                        action="{% url 'monitor:document_unsubscribe' sub.document.pk %}">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm"
+                            style="border: 1px solid var(--td-border); color: var(--td-text-muted);">
+                      Unsubscribe
+                    </button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% else %}
+      <p class="mb-4" style="color: var(--td-text-muted);">
+        You haven't subscribed to any documents yet.
+        <a href="{% url 'monitor:organizations' %}" style="color: var(--td-accent);">Browse organizations</a>
+        and click Subscribe next to the documents you want to follow.
+      </p>
+    {% endif %}
+
+    <h2 class="h5 mb-3" style="color: var(--td-primary-dark);">Organization subscriptions</h2>
+    {% if organization_subscriptions %}
+      <div class="td-card">
+        <div class="table-responsive">
+          <table class="table table-hover align-middle mb-0">
+            <thead>
+              <tr style="background: var(--td-primary-light);">
+                <th scope="col" class="border-0">Organization</th>
+                <th scope="col" class="border-0 text-end">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for sub in organization_subscriptions %}
+              <tr>
+                <td>{{ sub.organization.name }}</td>
+                <td class="text-end">
+                  <form method="post"
+                        action="{% url 'monitor:organization_unsubscribe' sub.organization.pk %}">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm"
+                            style="border: 1px solid var(--td-border); color: var(--td-text-muted);">
+                      Unsubscribe
+                    </button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% else %}
+      <p style="color: var(--td-text-muted);">
+        You're not following any organizations.
+        <a href="{% url 'monitor:organizations' %}" style="color: var(--td-accent);">Browse organizations</a>
+        to subscribe to all their documents at once.
+      </p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

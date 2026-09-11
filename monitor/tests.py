@@ -7,13 +7,27 @@ Run with:  python manage.py test monitor
 from unittest.mock import MagicMock, patch
 
 import requests
-
+from django.contrib.auth import get_user_model
+from django.core import mail
+from django.db import IntegrityError
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from .models import Country, Document, DocumentSnapshot, Language, Organization, Tag
+from .models import (
+    Country,
+    Document,
+    DocumentSnapshot,
+    DocumentSubscription,
+    Language,
+    LoginCode,
+    Organization,
+    OrganizationSubscription,
+    Suggestion,
+    Tag,
+)
 from .services import (
+    build_snapshot_change_message,
     clean_html,
     compute_hash,
     create_snapshot_if_changed,
@@ -21,12 +35,15 @@ from .services import (
     extract_text,
     fetch_and_snapshot,
     fetch_pdf_bytes,
+    generate_login_code,
+    send_login_code_email,
 )
-
+from .tasks import send_change_notifications
 
 # ---------------------------------------------------------------------------
 # Model tests
 # ---------------------------------------------------------------------------
+
 
 class TagModelTest(TestCase):
     def test_slug_auto_generated(self):
@@ -179,6 +196,7 @@ class DocumentSnapshotModelTest(TestCase):
 # Language model tests
 # ---------------------------------------------------------------------------
 
+
 class CountryModelTest(TestCase):
     def test_str(self):
         country = Country(name="United States", code="US")
@@ -290,6 +308,7 @@ class DocumentLanguageTest(TestCase):
 # ---------------------------------------------------------------------------
 # Service tests
 # ---------------------------------------------------------------------------
+
 
 class ExtractTextTest(TestCase):
     """Tests for the extract_text() function and its clean_html() alias."""
@@ -506,6 +525,7 @@ class FetchAndSnapshotTest(TestCase):
         self.doc.fetch_method = Document.FetchMethod.PLAYWRIGHT
         self.doc.save()
         from monitor.services import fetch_document_content
+
         text, method = fetch_document_content(self.doc)
         mock_playwright.assert_called_once()
         self.assertEqual(method, Document.FetchMethod.PLAYWRIGHT)
@@ -514,6 +534,7 @@ class FetchAndSnapshotTest(TestCase):
 # ---------------------------------------------------------------------------
 # PDF support tests
 # ---------------------------------------------------------------------------
+
 
 class IsPdfResponseTest(TestCase):
     """Unit tests for PDF detection logic inside fetch_pdf_bytes."""
@@ -534,7 +555,9 @@ class IsPdfResponseTest(TestCase):
 
     @patch("monitor.services.requests.get")
     def test_detects_pdf_by_url_extension(self, mock_get):
-        mock_get.return_value = self._make_response("application/octet-stream", "https://example.com/file.pdf")
+        mock_get.return_value = self._make_response(
+            "application/octet-stream", "https://example.com/file.pdf"
+        )
         _, is_pdf = fetch_pdf_bytes("https://example.com/file.pdf")
         self.assertTrue(is_pdf)
 
@@ -551,8 +574,10 @@ class ExtractPdfTextTest(TestCase):
     def _make_pdf_bytes(self, pages: list[str]) -> bytes:
         """Build a minimal valid PDF with one text string per page."""
         import io as _io
+
         try:
             import reportlab.pdfgen.canvas as rl_canvas
+
             buf = _io.BytesIO()
             c = rl_canvas.Canvas(buf)
             for text in pages:
@@ -566,6 +591,7 @@ class ExtractPdfTextTest(TestCase):
     def test_extract_returns_string(self):
         """extract_pdf_text returns a non-empty string for valid PDF bytes."""
         import io as _io
+
         # Use pdfplumber's own test fixture approach: mock page.extract_text
         with patch("pdfplumber.open") as mock_open:
             mock_page = MagicMock()
@@ -648,6 +674,7 @@ class FetchDocumentContentPdfTest(TestCase):
         mock_get.return_value = mock_response
         mock_extract.return_value = "Extracted PDF text"
         from monitor.services import fetch_document_content
+
         text, method = fetch_document_content(self.doc)
         self.assertEqual(text, "Extracted PDF text")
         self.doc.refresh_from_db()
@@ -666,6 +693,7 @@ class FetchDocumentContentPdfTest(TestCase):
             organization=self.doc.organization, url="https://acme.com/policy"
         )
         from monitor.services import fetch_document_content
+
         fetch_document_content(html_doc)
         html_doc.refresh_from_db()
         self.assertEqual(html_doc.document_format, Document.DocumentFormat.HTML)
@@ -681,6 +709,7 @@ class FetchDocumentContentPdfTest(TestCase):
         mock_response.raise_for_status = MagicMock()
         mock_get.return_value = mock_response
         from monitor.services import fetch_document_content
+
         text, method = fetch_document_content(self.doc)
         self.assertIsNone(text)
 
@@ -688,6 +717,7 @@ class FetchDocumentContentPdfTest(TestCase):
 # ---------------------------------------------------------------------------
 # View tests
 # ---------------------------------------------------------------------------
+
 
 class DocumentDetailViewTest(TestCase):
     def setUp(self):
@@ -733,10 +763,14 @@ class SnapshotDiffViewTest(TestCase):
         org = Organization.objects.create(name="Acme", website_url="https://acme.com")
         self.doc = Document.objects.create(organization=org, url="https://acme.com/tos")
         self.snap_old = DocumentSnapshot.objects.create(
-            document=self.doc, cleaned_text="Old line one\nOld line two", text_hash=compute_hash("old")
+            document=self.doc,
+            cleaned_text="Old line one\nOld line two",
+            text_hash=compute_hash("old"),
         )
         self.snap_new = DocumentSnapshot.objects.create(
-            document=self.doc, cleaned_text="New line one\nNew line two", text_hash=compute_hash("new")
+            document=self.doc,
+            cleaned_text="New line one\nNew line two",
+            text_hash=compute_hash("new"),
         )
 
     def _url(self, old_pk=None, new_pk=None):
@@ -817,6 +851,7 @@ class SnapshotTextViewTest(TestCase):
 # Task tests
 # ---------------------------------------------------------------------------
 
+
 class CheckDocumentTaskTest(TestCase):
     def setUp(self):
         org = Organization.objects.create(name="Acme", website_url="https://acme.com")
@@ -825,6 +860,7 @@ class CheckDocumentTaskTest(TestCase):
     @patch("monitor.tasks.fetch_and_snapshot")
     def test_creates_snapshot_when_changed(self, mock_fas):
         from monitor.tasks import check_document
+
         mock_fas.return_value = (MagicMock(), True)
         result = check_document(self.doc.pk)
         self.assertTrue(result["created"])
@@ -833,6 +869,7 @@ class CheckDocumentTaskTest(TestCase):
     @patch("monitor.tasks.fetch_and_snapshot")
     def test_no_snapshot_when_unchanged(self, mock_fas):
         from monitor.tasks import check_document
+
         mock_fas.return_value = (None, False)
         result = check_document(self.doc.pk)
         self.assertFalse(result["created"])
@@ -840,6 +877,7 @@ class CheckDocumentTaskTest(TestCase):
 
     def test_returns_error_for_missing_document(self):
         from monitor.tasks import check_document
+
         result = check_document(99999)
         self.assertFalse(result["created"])
         self.assertIn("not found", result["error"])
@@ -847,6 +885,7 @@ class CheckDocumentTaskTest(TestCase):
     @patch("monitor.tasks.fetch_and_snapshot")
     def test_skips_inactive_document(self, mock_fas):
         from monitor.tasks import check_document
+
         self.doc.is_active = False
         self.doc.save()
         result = check_document(self.doc.pk)
@@ -856,6 +895,7 @@ class CheckDocumentTaskTest(TestCase):
     @patch("monitor.tasks.fetch_and_snapshot", side_effect=NotImplementedError("playwright"))
     def test_handles_not_implemented(self, _mock):
         from monitor.tasks import check_document
+
         result = check_document(self.doc.pk)
         self.assertFalse(result["created"])
         self.assertIn("playwright", result["error"])
@@ -880,6 +920,7 @@ class CheckAllDocumentsTaskTest(TestCase):
     @patch("monitor.tasks.check_document.delay")
     def test_enqueues_only_active_documents(self, mock_delay):
         from monitor.tasks import check_all_documents
+
         result = check_all_documents()
         self.assertEqual(result["enqueued"], 2)
         called_ids = {call.args[0] for call in mock_delay.call_args_list}
@@ -890,6 +931,7 @@ class CheckAllDocumentsTaskTest(TestCase):
     @patch("monitor.tasks.check_document.delay")
     def test_returns_enqueued_count(self, mock_delay):
         from monitor.tasks import check_all_documents
+
         result = check_all_documents()
         self.assertEqual(result["enqueued"], mock_delay.call_count)
 
@@ -904,6 +946,7 @@ class CheckAllDocumentsShufflingTest(TestCase):
     @patch("monitor.tasks.check_document.delay")
     def test_shuffles_ids(self, mock_delay, mock_shuffle):
         from monitor.tasks import check_all_documents
+
         check_all_documents()
         self.assertTrue(mock_shuffle.called)
 
@@ -918,6 +961,7 @@ class FetchDocumentsCommandTest(TestCase):
     @patch("monitor.management.commands.fetch_documents.fetch_and_snapshot")
     def test_shuffles_by_default(self, mock_fetch, mock_shuffle):
         from django.core.management import call_command
+
         mock_fetch.return_value = (MagicMock(), False)
         call_command("fetch_documents")
         self.assertTrue(mock_shuffle.called)
@@ -926,6 +970,7 @@ class FetchDocumentsCommandTest(TestCase):
     @patch("monitor.management.commands.fetch_documents.fetch_and_snapshot")
     def test_no_shuffle_flag_disables_shuffling(self, mock_fetch, mock_shuffle):
         from django.core.management import call_command
+
         mock_fetch.return_value = (MagicMock(), False)
         call_command("fetch_documents", shuffle=False)
         self.assertFalse(mock_shuffle.called)
@@ -1013,9 +1058,7 @@ class OrganizationsViewTest(TestCase):
         self.child = Organization.objects.create(
             name="Instagram", website_url="https://instagram.com", parent=self.parent
         )
-        self.doc = Document.objects.create(
-            organization=self.parent, url="https://meta.com/tos"
-        )
+        self.doc = Document.objects.create(organization=self.parent, url="https://meta.com/tos")
         self.child_doc = Document.objects.create(
             organization=self.child,
             url="https://instagram.com/tos",
@@ -1188,3 +1231,552 @@ class DocumentTypeFilterTest(TestCase):
         type_values = [dt["value"] for dt in doc_types]
         self.assertIn("tos", type_values)
         self.assertIn("privacy", type_values)
+
+
+# ---------------------------------------------------------------------------
+# Website suggestion tests
+# ---------------------------------------------------------------------------
+
+
+class SuggestionModelTest(TestCase):
+    def test_status_defaults_to_pending(self):
+        suggestion = Suggestion.objects.create(
+            organization_name="Acme",
+            website_url="https://acme.com",
+            document_url="https://acme.com/tos",
+        )
+        self.assertEqual(suggestion.status, Suggestion.Status.PENDING)
+
+    def test_full_fields_roundtrip(self):
+        suggestion = Suggestion.objects.create(
+            organization_name="Acme",
+            website_url="https://acme.com",
+            document_url="https://acme.com/privacy",
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+            contact_email="user@example.com",
+            notes="Please add this one",
+        )
+        suggestion.refresh_from_db()
+        self.assertEqual(suggestion.document_type, "privacy")
+        self.assertEqual(suggestion.contact_email, "user@example.com")
+
+    def test_str_returns_company_name(self):
+        suggestion = Suggestion(organization_name="Acme Corp")
+        self.assertEqual(str(suggestion), "Acme Corp")
+
+    def test_creates_organization_and_document(self):
+        suggestion = Suggestion.objects.create(
+            organization_name="Acme",
+            website_url="https://acme.com",
+            document_url="https://acme.com/privacy",
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+        )
+        org, doc = suggestion.create_organization_and_document()
+        self.assertEqual(org.name, "Acme")
+        self.assertEqual(org.website_url, "https://acme.com")
+        self.assertEqual(doc.document_type, "privacy")
+        self.assertEqual(doc.url, "https://acme.com/privacy")
+
+    def test_create_organization_and_document_is_idempotent(self):
+        suggestion = Suggestion.objects.create(
+            organization_name="Acme",
+            website_url="https://acme.com",
+            document_url="https://acme.com/privacy",
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+        )
+        suggestion.create_organization_and_document()
+        suggestion.create_organization_and_document()
+        self.assertEqual(Organization.objects.count(), 1)
+        self.assertEqual(Document.objects.count(), 1)
+
+
+class LoginCodeModelTest(TestCase):
+    def test_created_at_auto_set(self):
+        code = LoginCode.objects.create(
+            email="bob@example.com",
+            code_hash="abc123",
+            expires_at=timezone.now() + timezone.timedelta(minutes=10),
+        )
+        self.assertIsNotNone(code.created_at)
+
+
+class DocumentSubscriptionModelTest(TestCase):
+    def setUp(self):
+        org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.doc = Document.objects.create(organization=org, url="https://acme.com/tos")
+        self.user = get_user_model().objects.create_user(username="bob", email="bob@example.com")
+
+    def test_subscription_created(self):
+        sub = DocumentSubscription.objects.create(user=self.user, document=self.doc)
+        self.assertEqual(sub.document, self.doc)
+        self.assertEqual(sub.user, self.user)
+
+    def test_user_cannot_subscribe_twice(self):
+        DocumentSubscription.objects.create(user=self.user, document=self.doc)
+        with self.assertRaises(IntegrityError):
+            DocumentSubscription.objects.create(user=self.user, document=self.doc)
+
+    def test_cascade_delete_on_document(self):
+        DocumentSubscription.objects.create(user=self.user, document=self.doc)
+        self.doc.delete()
+        self.assertEqual(DocumentSubscription.objects.count(), 0)
+
+
+class OrganizationSubscriptionModelTest(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.user = get_user_model().objects.create_user(username="bob", email="bob@example.com")
+
+    def test_subscription_created(self):
+        sub = OrganizationSubscription.objects.create(user=self.user, organization=self.org)
+        self.assertEqual(sub.organization, self.org)
+
+    def test_user_cannot_subscribe_twice(self):
+        OrganizationSubscription.objects.create(user=self.user, organization=self.org)
+        with self.assertRaises(IntegrityError):
+            OrganizationSubscription.objects.create(user=self.user, organization=self.org)
+
+
+# ---------------------------------------------------------------------------
+# Login / notification service tests
+# ---------------------------------------------------------------------------
+
+
+class GenerateLoginCodeTest(TestCase):
+    def test_returns_six_digit_string(self):
+        code = generate_login_code()
+        self.assertEqual(len(code), 6)
+        self.assertTrue(code.isdigit())
+
+    def test_codes_are_distinct(self):
+        codes = {generate_login_code() for _ in range(200)}
+        self.assertGreater(len(codes), 150)
+
+
+class SendLoginCodeEmailTest(TestCase):
+    def test_sends_email_with_code(self):
+        send_login_code_email("user@example.com", "123456")
+        self.assertEqual(len(mail.outbox), 1)
+        email = mail.outbox[0]
+        self.assertEqual(email.to, ["user@example.com"])
+        self.assertIn("TosDiff", email.subject)
+        self.assertIn("123456", email.body)
+
+
+class BuildSnapshotChangeMessageTest(TestCase):
+    def setUp(self):
+        org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.doc = Document.objects.create(organization=org, url="https://acme.com/tos")
+        self.old = DocumentSnapshot.objects.create(
+            document=self.doc, cleaned_text="Version 1", text_hash=compute_hash("v1")
+        )
+        self.new = DocumentSnapshot.objects.create(
+            document=self.doc, cleaned_text="Version 2", text_hash=compute_hash("v2")
+        )
+        self.site_url = "http://localhost:8000"
+
+    def test_subject_mentions_org_and_document(self):
+        subject, _, _ = build_snapshot_change_message(self.doc, self.new, self.old, self.site_url)
+        self.assertIn("Acme", subject)
+        self.assertIn("Terms of Service", subject)
+
+    def test_plain_body_contains_detail_and_diff_links(self):
+        _, plain, _ = build_snapshot_change_message(self.doc, self.new, self.old, self.site_url)
+        self.assertIn(f"{self.site_url}/document/{self.doc.pk}/", plain)
+        self.assertIn(f"/diff/{self.old.pk}/{self.new.pk}/", plain)
+
+    def test_html_body_contains_anchors(self):
+        _, _, html = build_snapshot_change_message(self.doc, self.new, self.old, self.site_url)
+        self.assertIn('<a href="', html)
+        self.assertIn(f"/document/{self.doc.pk}/", html)
+
+    def test_works_without_previous_snapshot(self):
+        _, plain, _ = build_snapshot_change_message(self.doc, self.new, None, self.site_url)
+        self.assertIn("View the document", plain)
+        self.assertNotIn("/diff/", plain)
+
+
+# ---------------------------------------------------------------------------
+# Suggestion view tests
+# ---------------------------------------------------------------------------
+
+
+class SuggestionViewTest(TestCase):
+    def test_get_returns_200(self):
+        response = self.client.get(reverse("monitor:suggest"))
+        self.assertEqual(response.status_code, 200)
+
+    def test_uses_correct_template(self):
+        response = self.client.get(reverse("monitor:suggest"))
+        self.assertTemplateUsed(response, "monitor/suggest_document.html")
+
+    def test_post_creates_suggestion(self):
+        response = self.client.post(
+            reverse("monitor:suggest"),
+            {
+                "organization_name": "Acme",
+                "website_url": "https://acme.com",
+                "document_url": "https://acme.com/tos",
+                "document_type": Document.DocumentType.TERMS_OF_SERVICE,
+            },
+        )
+        self.assertEqual(Suggestion.objects.count(), 1)
+        self.assertRedirects(response, reverse("monitor:suggestion_thanks"))
+
+    def test_post_requires_document_url(self):
+        response = self.client.post(
+            reverse("monitor:suggest"),
+            {
+                "organization_name": "Acme",
+                "website_url": "https://acme.com",
+                "document_type": Document.DocumentType.TERMS_OF_SERVICE,
+            },
+        )
+        self.assertEqual(Suggestion.objects.count(), 0)
+        self.assertEqual(response.status_code, 200)
+
+    def test_thanks_page_returns_200(self):
+        response = self.client.get(reverse("monitor:suggestion_thanks"))
+        self.assertEqual(response.status_code, 200)
+
+
+# ---------------------------------------------------------------------------
+# OTP login view tests
+# ---------------------------------------------------------------------------
+
+
+class LoginRequestViewTest(TestCase):
+    def test_get_returns_200(self):
+        response = self.client.get(reverse("monitor:login_request"))
+        self.assertEqual(response.status_code, 200)
+
+    def test_post_creates_login_code_and_sends_email(self):
+        response = self.client.post(
+            reverse("monitor:login_request"), {"email": "Alice@Example.com"}
+        )
+        self.assertRedirects(response, reverse("monitor:login_verify"))
+        code = LoginCode.objects.filter(email="alice@example.com").latest("created_at")
+        self.assertIsNotNone(code)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["alice@example.com"])
+
+    def test_post_stores_email_in_session(self):
+        self.client.post(reverse("monitor:login_request"), {"email": "bob@example.com"})
+        self.assertEqual(self.client.session["login_email"], "bob@example.com")
+
+    def test_resend_invalidates_previous_codes(self):
+        self.client.post(reverse("monitor:login_request"), {"email": "bob@example.com"})
+        self.client.post(reverse("monitor:login_request"), {"email": "bob@example.com"})
+        unused = LoginCode.objects.filter(email="bob@example.com", used_at__isnull=True)
+        self.assertEqual(unused.count(), 1)
+
+    def test_authenticated_user_redirected_away(self):
+        user = get_user_model().objects.create_user(username="carol", email="carol@example.com")
+        self.client.force_login(user)
+        response = self.client.get(reverse("monitor:login_request"))
+        self.assertRedirects(response, reverse("monitor:account"))
+
+
+class LoginVerifyViewTest(TestCase):
+    def setUp(self):
+        with patch("monitor.views.generate_login_code", return_value="123456"):
+            self.client.post(reverse("monitor:login_request"), {"email": "bob@example.com"})
+
+    def test_successful_code_logs_user_in(self):
+        response = self.client.post(reverse("monitor:login_verify"), {"code": "123456"})
+        self.assertRedirects(response, reverse("monitor:account"))
+        user = get_user_model().objects.get(email="bob@example.com")
+        self.assertEqual(int(self.client.session["_auth_user_id"]), user.pk)
+
+    def test_user_account_created_on_first_login(self):
+        self.client.post(reverse("monitor:login_verify"), {"code": "123456"})
+        self.assertEqual(get_user_model().objects.filter(email="bob@example.com").count(), 1)
+
+    def test_wrong_code_rejected(self):
+        response = self.client.post(reverse("monitor:login_verify"), {"code": "000000"})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("_auth_user_id", self.client.session)
+
+    def test_expired_code_rejected(self):
+        LoginCode.objects.filter(email="bob@example.com").update(
+            expires_at=timezone.now() - timezone.timedelta(minutes=1)
+        )
+        response = self.client.post(reverse("monitor:login_verify"), {"code": "123456"})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("_auth_user_id", self.client.session)
+
+    def test_code_marked_used_after_login(self):
+        self.client.post(reverse("monitor:login_verify"), {"code": "123456"})
+        used = LoginCode.objects.filter(email="bob@example.com", used_at__isnull=False)
+        self.assertEqual(used.count(), 1)
+
+    def test_no_email_in_session_redirects_to_request(self):
+        self.client.session.flush()
+        response = self.client.post(reverse("monitor:login_verify"), {"code": "123456"})
+        self.assertRedirects(response, reverse("monitor:login_request"))
+
+    def test_verify_page_shows_email(self):
+        response = self.client.get(reverse("monitor:login_verify"))
+        self.assertContains(response, "bob@example.com")
+
+    def test_redirects_to_next_after_login(self):
+        with patch("monitor.views.generate_login_code", return_value="654321"):
+            self.client.post(
+                reverse("monitor:login_request") + "?next=/organizations/",
+                {"email": "carol@example.com"},
+            )
+        response = self.client.post(reverse("monitor:login_verify"), {"code": "654321"})
+        self.assertRedirects(response, "/organizations/")
+
+
+class LogoutViewTest(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="bob", email="bob@example.com")
+        self.client.force_login(self.user)
+
+    def test_logout_logs_user_out(self):
+        response = self.client.post(reverse("monitor:logout"))
+        self.assertRedirects(response, reverse("monitor:home"))
+        self.assertNotIn("_auth_user_id", self.client.session)
+
+
+class AccountViewTest(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="bob", email="bob@example.com")
+        org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.doc = Document.objects.create(organization=org, url="https://acme.com/tos")
+        DocumentSubscription.objects.create(user=self.user, document=self.doc)
+        OrganizationSubscription.objects.create(user=self.user, organization=org)
+        self.client.force_login(self.user)
+
+    def test_requires_login(self):
+        self.client.logout()
+        response = self.client.get(reverse("monitor:account"))
+        self.assertEqual(response.status_code, 302)
+
+    def test_shows_email(self):
+        response = self.client.get(reverse("monitor:account"))
+        self.assertContains(response, "bob@example.com")
+
+    def test_lists_document_subscriptions(self):
+        response = self.client.get(reverse("monitor:account"))
+        self.assertContains(response, "Acme")
+        self.assertContains(response, "Terms of Service")
+
+    def test_lists_organization_subscriptions(self):
+        response = self.client.get(reverse("monitor:account"))
+        org_subs = list(response.context["organization_subscriptions"])
+        self.assertEqual(len(org_subs), 1)
+        self.assertEqual(org_subs[0].organization.name, "Acme")
+
+
+# ---------------------------------------------------------------------------
+# Subscription view tests
+# ---------------------------------------------------------------------------
+
+
+class DocumentSubscriptionViewTest(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="bob", email="bob@example.com")
+        org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.doc = Document.objects.create(organization=org, url="https://acme.com/tos")
+
+    def test_subscribe_requires_login(self):
+        response = self.client.post(reverse("monitor:document_subscribe", args=[self.doc.pk]))
+        self.assertEqual(response.status_code, 302)
+
+    def test_subscribe_creates_subscription(self):
+        self.client.force_login(self.user)
+        response = self.client.post(reverse("monitor:document_subscribe", args=[self.doc.pk]))
+        self.assertRedirects(response, reverse("monitor:document_detail", args=[self.doc.pk]))
+        self.assertEqual(
+            DocumentSubscription.objects.filter(user=self.user, document=self.doc).count(), 1
+        )
+
+    def test_subscribe_is_idempotent(self):
+        self.client.force_login(self.user)
+        url = reverse("monitor:document_subscribe", args=[self.doc.pk])
+        self.client.post(url)
+        self.client.post(url)
+        self.assertEqual(
+            DocumentSubscription.objects.filter(user=self.user, document=self.doc).count(), 1
+        )
+
+    def test_unsubscribe_removes_subscription(self):
+        DocumentSubscription.objects.create(user=self.user, document=self.doc)
+        self.client.force_login(self.user)
+        response = self.client.post(reverse("monitor:document_unsubscribe", args=[self.doc.pk]))
+        self.assertRedirects(response, reverse("monitor:document_detail", args=[self.doc.pk]))
+        self.assertEqual(
+            DocumentSubscription.objects.filter(user=self.user, document=self.doc).count(), 0
+        )
+
+
+class OrganizationSubscriptionViewTest(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="bob", email="bob@example.com")
+        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+
+    def test_subscribe_requires_login(self):
+        response = self.client.post(reverse("monitor:organization_subscribe", args=[self.org.pk]))
+        self.assertEqual(response.status_code, 302)
+
+    def test_subscribe_creates_subscription(self):
+        self.client.force_login(self.user)
+        response = self.client.post(reverse("monitor:organization_subscribe", args=[self.org.pk]))
+        self.assertRedirects(response, reverse("monitor:organizations"))
+        self.assertEqual(
+            OrganizationSubscription.objects.filter(user=self.user, organization=self.org).count(),
+            1,
+        )
+
+    def test_unsubscribe_removes_subscription(self):
+        OrganizationSubscription.objects.create(user=self.user, organization=self.org)
+        self.client.force_login(self.user)
+        response = self.client.post(reverse("monitor:organization_unsubscribe", args=[self.org.pk]))
+        self.assertRedirects(response, reverse("monitor:organizations"))
+        self.assertEqual(
+            OrganizationSubscription.objects.filter(user=self.user, organization=self.org).count(),
+            0,
+        )
+
+
+class DocumentSubscriptionContextTest(TestCase):
+    def setUp(self):
+        org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.doc = Document.objects.create(organization=org, url="https://acme.com/tos")
+
+    def test_anonymous_user_sees_login_prompt(self):
+        response = self.client.get(reverse("monitor:document_detail", args=[self.doc.pk]))
+        self.assertContains(response, "Log in to subscribe")
+
+    def test_authenticated_user_sees_subscribe_form(self):
+        user = get_user_model().objects.create_user(username="bob", email="bob@example.com")
+        self.client.force_login(user)
+        response = self.client.get(reverse("monitor:document_detail", args=[self.doc.pk]))
+        self.assertContains(response, "Subscribe")
+
+    def test_subscribed_user_sees_unsubscribe_form(self):
+        user = get_user_model().objects.create_user(username="bob", email="bob@example.com")
+        DocumentSubscription.objects.create(user=user, document=self.doc)
+        self.client.force_login(user)
+        response = self.client.get(reverse("monitor:document_detail", args=[self.doc.pk]))
+        self.assertContains(response, "Unsubscribe")
+        self.assertNotContains(response, "Subscribe")
+
+
+# ---------------------------------------------------------------------------
+# Change notification task tests
+# ---------------------------------------------------------------------------
+
+
+class SendChangeNotificationsTaskTest(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.doc = Document.objects.create(organization=self.org, url="https://acme.com/tos")
+        self.old = DocumentSnapshot.objects.create(
+            document=self.doc, cleaned_text="Version 1", text_hash=compute_hash("v1")
+        )
+        self.new = DocumentSnapshot.objects.create(
+            document=self.doc, cleaned_text="Version 2", text_hash=compute_hash("v2")
+        )
+        self.user = get_user_model().objects.create_user(username="bob", email="bob@example.com")
+        self.inactive_user = get_user_model().objects.create_user(
+            username="carol", email="carol@example.com", is_active=False
+        )
+
+    @patch("monitor.tasks.send_mail")
+    def test_sends_email_to_document_subscribers(self, mock_send):
+        DocumentSubscription.objects.create(user=self.user, document=self.doc)
+        result = send_change_notifications(self.doc.pk, self.new.pk)
+        self.assertEqual(result["sent"], 1)
+        self.assertIsNone(result["error"])
+        recipients = mock_send.call_args[0][3]
+        self.assertEqual(recipients, ["bob@example.com"])
+
+    @patch("monitor.tasks.send_mail")
+    def test_sends_email_to_organization_subscribers(self, mock_send):
+        OrganizationSubscription.objects.create(user=self.user, organization=self.org)
+        result = send_change_notifications(self.doc.pk, self.new.pk)
+        self.assertEqual(result["sent"], 1)
+        recipients = mock_send.call_args[0][3]
+        self.assertEqual(recipients, ["bob@example.com"])
+
+    @patch("monitor.tasks.send_mail")
+    def test_deduplicates_users_subscribed_at_both_levels(self, mock_send):
+        DocumentSubscription.objects.create(user=self.user, document=self.doc)
+        OrganizationSubscription.objects.create(user=self.user, organization=self.org)
+        result = send_change_notifications(self.doc.pk, self.new.pk)
+        self.assertEqual(result["sent"], 1)
+        self.assertEqual(mock_send.call_count, 1)
+
+    @patch("monitor.tasks.send_mail")
+    def test_skips_inactive_users(self, mock_send):
+        DocumentSubscription.objects.create(user=self.inactive_user, document=self.doc)
+        result = send_change_notifications(self.doc.pk, self.new.pk)
+        self.assertEqual(result["sent"], 0)
+        mock_send.assert_not_called()
+
+    @patch("monitor.tasks.send_mail")
+    def test_no_subscribers_no_email_sent(self, mock_send):
+        result = send_change_notifications(self.doc.pk, self.new.pk)
+        self.assertEqual(result["sent"], 0)
+        mock_send.assert_not_called()
+
+    @patch("monitor.tasks.send_mail")
+    def test_email_contains_change_link(self, mock_send):
+        DocumentSubscription.objects.create(user=self.user, document=self.doc)
+        send_change_notifications(self.doc.pk, self.new.pk)
+        subject = mock_send.call_args[0][0]
+        body = mock_send.call_args[0][1]
+        self.assertIn("Acme", subject)
+        self.assertIn(f"/document/{self.doc.pk}/", body)
+        self.assertIn(f"/diff/{self.old.pk}/{self.new.pk}/", body)
+
+    def test_missing_document_returns_error(self):
+        result = send_change_notifications(99999, self.new.pk)
+        self.assertEqual(result["sent"], 0)
+        self.assertIn("not found", result["error"])
+
+    def test_missing_snapshot_returns_error(self):
+        result = send_change_notifications(self.doc.pk, 99999)
+        self.assertEqual(result["sent"], 0)
+        self.assertIn("not found", result["error"])
+
+
+class CheckDocumentNotificationDispatchTest(TestCase):
+    """check_document dispatches a notification task when a snapshot is created."""
+
+    def setUp(self):
+        org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.doc = Document.objects.create(organization=org, url="https://acme.com/tos")
+        self.user = get_user_model().objects.create_user(username="bob", email="bob@example.com")
+
+    @patch("monitor.tasks.fetch_and_snapshot")
+    def test_dispatches_notifications_when_created(self, mock_fas):
+        from monitor.tasks import check_document
+
+        mock_snapshot = MagicMock()
+        mock_fas.return_value = (mock_snapshot, True)
+        DocumentSubscription.objects.create(user=self.user, document=self.doc)
+        with patch("monitor.tasks.send_change_notifications.delay") as mock_delay:
+            check_document(self.doc.pk)
+        mock_delay.assert_called_once_with(self.doc.pk, mock_snapshot.pk)
+
+    @patch("monitor.tasks.fetch_and_snapshot")
+    def test_no_dispatch_when_no_subscribers(self, mock_fas):
+        from monitor.tasks import check_document
+
+        mock_fas.return_value = (MagicMock(), True)
+        with patch("monitor.tasks.send_change_notifications.delay") as mock_delay:
+            check_document(self.doc.pk)
+        mock_delay.assert_not_called()
+
+    @patch("monitor.tasks.fetch_and_snapshot")
+    def test_no_dispatch_when_unchanged(self, mock_fas):
+        from monitor.tasks import check_document
+
+        mock_fas.return_value = (None, False)
+        with patch("monitor.tasks.send_change_notifications.delay") as mock_delay:
+            check_document(self.doc.pk)
+        mock_delay.assert_not_called()

@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}Suggest a Website — TosDiff{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-7">
+    <h1 class="h3 mb-4">{{ page_title }}</h1>
+
+    <div class="td-card p-4 mb-4">
+      <p style="color: var(--td-text-muted);">
+        Know of a Terms of Service, Privacy Policy, or other legal document we
+        should be tracking? Suggest it here and we'll review it for inclusion.
+      </p>
+
+      {% if form.errors %}
+      <div class="alert alert-danger mb-3">
+        Please correct the errors below.
+      </div>
+      {% endif %}
+
+      <form method="post" novalidate>
+        {% csrf_token %}
+
+        {% for field in form %}
+        <div class="mb-3">
+          <label for="{{ field.id_for_label }}" class="form-label fw-semibold">
+            {{ field.label }}
+          </label>
+          {{ field }}
+          {% if field.help_text %}
+            <div class="form-text">{{ field.help_text }}</div>
+          {% endif %}
+          {% if field.errors %}
+            {% for error in field.errors %}
+              <div class="invalid-feedback d-block">{{ error }}</div>
+            {% endfor %}
+          {% endif %}
+        </div>
+        {% endfor %}
+
+        <button type="submit" class="btn"
+                style="background: var(--td-primary); color: #fff; border: none;">
+          Submit suggestion
+        </button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

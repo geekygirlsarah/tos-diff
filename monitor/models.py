@@ -1,10 +1,15 @@
+from django.conf import settings
 from django.db import models
 from django.utils.text import slugify
 
 
 class Country(models.Model):
-    name = models.CharField(max_length=100, help_text='Display name, e.g. "United States", "France"')
-    code = models.CharField(max_length=2, unique=True, help_text='ISO 3166-1 alpha-2 code, e.g. "US", "FR"')
+    name = models.CharField(
+        max_length=100, help_text='Display name, e.g. "United States", "France"'
+    )
+    code = models.CharField(
+        max_length=2, unique=True, help_text='ISO 3166-1 alpha-2 code, e.g. "US", "FR"'
+    )
 
     class Meta:
         ordering = ["name"]
@@ -207,9 +212,7 @@ class Document(models.Model):
 
 
 class DocumentSnapshot(models.Model):
-    document = models.ForeignKey(
-        Document, on_delete=models.CASCADE, related_name="snapshots"
-    )
+    document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name="snapshots")
     captured_at = models.DateTimeField(auto_now_add=True)
     cleaned_text = models.TextField()
     text_hash = models.CharField(max_length=64, db_index=True)
@@ -219,3 +222,131 @@ class DocumentSnapshot(models.Model):
 
     def __str__(self) -> str:
         return f"{self.document} @ {self.captured_at:%Y-%m-%d %H:%M}"
+
+
+class Suggestion(models.Model):
+    """User-submitted request to add a new website / policy document to track."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+
+    organization_name = models.CharField(
+        max_length=255, help_text="Suggested company or organization name."
+    )
+    website_url = models.URLField(max_length=500, help_text="Company home page / website URL.")
+    document_url = models.URLField(max_length=500, help_text="Direct URL to the policy document.")
+    document_type = models.CharField(
+        max_length=20,
+        choices=Document.DocumentType.choices,
+        default=Document.DocumentType.TERMS_OF_SERVICE,
+        help_text="Type of document being suggested.",
+    )
+    other_document_type = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text='Describe the document type when "Other" is selected.',
+    )
+    contact_email = models.EmailField(
+        blank=True,
+        default="",
+        help_text="Optional email address if we need to follow up.",
+    )
+    notes = models.TextField(
+        blank=True, default="", help_text="Any additional notes about the suggestion."
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        help_text="Review status of this suggestion.",
+    )
+    submitted_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(
+        null=True, blank=True, help_text="When the suggestion was reviewed."
+    )
+    review_notes = models.TextField(
+        blank=True, default="", help_text="Internal notes from the review process."
+    )
+
+    class Meta:
+        ordering = ["-submitted_at", "-pk"]
+
+    def __str__(self) -> str:
+        return self.organization_name
+
+    def create_organization_and_document(self) -> tuple["Organization", "Document"]:
+        """
+        Create (or fetch) an Organization and Document from this suggestion.
+
+        Idempotent: calling it more than once will not create duplicates.
+        """
+        organization, _ = Organization.objects.get_or_create(
+            website_url=self.website_url,
+            defaults={"name": self.organization_name},
+        )
+        document, _ = Document.objects.get_or_create(
+            organization=organization,
+            document_type=self.document_type,
+            url=self.document_url,
+            defaults={"other_document_type": self.other_document_type},
+        )
+        return organization, document
+
+
+class LoginCode(models.Model):
+    """One-time login codes emailed to users instead of passwords."""
+
+    email = models.EmailField(db_index=True)
+    code_hash = models.CharField(max_length=64, help_text="SHA-256 of the plain code.")
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.email} ({'used' if self.used_at else 'unused'})"
+
+
+class DocumentSubscription(models.Model):
+    """A user follows a specific document and gets notified on changes."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="document_subscriptions",
+    )
+    document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name="subscribers")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [("user", "document")]
+        ordering = ["document__organization__name", "document__document_type"]
+
+    def __str__(self) -> str:
+        return f"{self.user} → {self.document}"
+
+
+class OrganizationSubscription(models.Model):
+    """A user follows an organization and gets notified when any of its docs change."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="organization_subscriptions",
+    )
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="subscribers"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [("user", "organization")]
+        ordering = ["organization__name"]
+
+    def __str__(self) -> str:
+        return f"{self.user} → {self.organization}"

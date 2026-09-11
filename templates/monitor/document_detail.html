@@ -30,6 +30,34 @@
   </a>
 </div>
 
+<div class="mb-4">
+  {% if user.is_authenticated %}
+    {% if is_subscribed %}
+      <form method="post" action="{% url 'monitor:document_unsubscribe' document.pk %}">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm"
+                style="border: 1px solid var(--td-border); color: var(--td-text-muted);">
+          Unsubscribe
+        </button>
+      </form>
+    {% else %}
+      <form method="post" action="{% url 'monitor:document_subscribe' document.pk %}">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm"
+                style="background: var(--td-accent); color: #fff; border: none;">
+          Subscribe
+        </button>
+      </form>
+    {% endif %}
+  {% else %}
+    <a href="{% url 'monitor:login_request' %}?next={{ request.path }}"
+       class="btn btn-sm"
+       style="border: 1px solid var(--td-border); color: var(--td-text-muted);">
+      Log in to subscribe
+    </a>
+  {% endif %}
+</div>
+
 {% if snapshot_pairs %}
 <h2 class="h5 mb-3">Snapshot timeline</h2>
 <div class="td-card">

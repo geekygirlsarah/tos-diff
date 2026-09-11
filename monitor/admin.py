@@ -1,7 +1,19 @@
 from django.contrib import admin
+from django.utils import timezone
 from django.utils.html import format_html
 
-from .models import Country, Document, DocumentSnapshot, Language, Organization, Tag
+from .models import (
+    Country,
+    Document,
+    DocumentSnapshot,
+    DocumentSubscription,
+    Language,
+    LoginCode,
+    Organization,
+    OrganizationSubscription,
+    Suggestion,
+    Tag,
+)
 
 
 @admin.register(Country)
@@ -25,7 +37,15 @@ class TagAdmin(admin.ModelAdmin):
 
 @admin.register(Organization)
 class OrganizationAdmin(admin.ModelAdmin):
-    list_display = ["name", "slug", "category", "parent", "is_failing", "website_url_link", "document_count"]
+    list_display = [
+        "name",
+        "slug",
+        "category",
+        "parent",
+        "is_failing",
+        "website_url_link",
+        "document_count",
+    ]
     list_filter = ["category", "is_failing", "tags"]
     search_fields = ["name", "slug", "website_url"]
     prepopulated_fields = {"slug": ("name",)}
@@ -118,3 +138,69 @@ class DocumentSnapshotAdmin(admin.ModelAdmin):
     search_fields = ["document__organization__name", "text_hash"]
     readonly_fields = ["document", "captured_at", "text_hash", "cleaned_text"]
     list_select_related = ["document__organization"]
+
+
+@admin.register(Suggestion)
+class SuggestionAdmin(admin.ModelAdmin):
+    list_display = [
+        "organization_name",
+        "document_type",
+        "status",
+        "contact_email",
+        "submitted_at",
+        "reviewed_at",
+    ]
+    list_filter = ["status", "document_type"]
+    search_fields = ["organization_name", "website_url", "document_url", "contact_email"]
+    readonly_fields = ["submitted_at"]
+    actions = ["approve_and_create", "approve", "reject"]
+
+    @admin.action(description="Approve and create Organization + Document")
+    def approve_and_create(self, request: admin.request, queryset: admin.QuerySet) -> None:
+        now = timezone.now()
+        for suggestion in queryset.filter(status=Suggestion.Status.PENDING):
+            suggestion.create_organization_and_document()
+            suggestion.status = Suggestion.Status.APPROVED
+            suggestion.reviewed_at = now
+            suggestion.save(update_fields=["status", "reviewed_at"])
+        self.message_user(request, "Approved selected suggestions and created orgs/documents.")
+
+    @admin.action(description="Approve (status only)")
+    def approve(self, request: admin.request, queryset: admin.QuerySet) -> None:
+        queryset.filter(status=Suggestion.Status.PENDING).update(
+            status=Suggestion.Status.APPROVED,
+            reviewed_at=timezone.now(),
+        )
+        self.message_user(request, "Marked suggestions as approved.")
+
+    @admin.action(description="Reject")
+    def reject(self, request: admin.request, queryset: admin.QuerySet) -> None:
+        queryset.filter(status=Suggestion.Status.PENDING).update(
+            status=Suggestion.Status.REJECTED,
+            reviewed_at=timezone.now(),
+        )
+        self.message_user(request, "Marked suggestions as rejected.")
+
+
+@admin.register(LoginCode)
+class LoginCodeAdmin(admin.ModelAdmin):
+    list_display = ["email", "code_hash", "created_at", "expires_at", "used_at"]
+    list_filter = ["used_at"]
+    search_fields = ["email"]
+    readonly_fields = ["email", "code_hash", "created_at", "expires_at", "used_at"]
+
+
+@admin.register(DocumentSubscription)
+class DocumentSubscriptionAdmin(admin.ModelAdmin):
+    list_display = ["user", "document", "created_at"]
+    search_fields = ["user__username", "user__email", "document__organization__name"]
+    list_select_related = ["user", "document__organization"]
+    raw_id_fields = ["user", "document"]
+
+
+@admin.register(OrganizationSubscription)
+class OrganizationSubscriptionAdmin(admin.ModelAdmin):
+    list_display = ["user", "organization", "created_at"]
+    search_fields = ["user__username", "user__email", "organization__name"]
+    list_select_related = ["user", "organization"]
+    raw_id_fields = ["user", "organization"]

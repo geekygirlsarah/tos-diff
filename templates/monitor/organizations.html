@@ -14,11 +14,32 @@
         <a href="{{ org.website_url }}" target="_blank" rel="noopener noreferrer"
            class="text-decoration-none" style="color: var(--td-primary-dark);">{{ org.name }}</a>
       </h2>
-      {% if org.category %}
-      <span class="td-badge" style="background: var(--td-accent-light); color: var(--td-accent);">
-        {{ org.get_category_display }}
-      </span>
-      {% endif %}
+      <div class="d-flex align-items-center gap-2">
+        {% if org.category %}
+        <span class="td-badge" style="background: var(--td-accent-light); color: var(--td-accent);">
+          {{ org.get_category_display }}
+        </span>
+        {% endif %}
+        {% if user.is_authenticated %}
+          {% if org.pk in subscribed_org_ids %}
+          <form method="post" action="{% url 'monitor:organization_unsubscribe' org.pk %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-sm"
+                    style="border: 1px solid var(--td-border); color: var(--td-text-muted);">
+              Following
+            </button>
+          </form>
+          {% else %}
+          <form method="post" action="{% url 'monitor:organization_subscribe' org.pk %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-sm"
+                    style="background: var(--td-accent); color: #fff; border: none;">
+              Subscribe
+            </button>
+          </form>
+          {% endif %}
+        {% endif %}
+      </div>
     </div>
     <div>
       {% if org.documents.all %}

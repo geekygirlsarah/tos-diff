@@ -1,10 +1,37 @@
 import difflib
+import secrets
+from typing import TYPE_CHECKING
 
-from django.http import Http404
+from django.contrib.auth import get_user_model, login
+from django.contrib.auth.mixins import LoginRequiredMixin
+from django.contrib.auth.views import LogoutView  # noqa: F401 – re-exported for urls
+from django.http import Http404, HttpResponse
+from django.shortcuts import get_object_or_404, redirect
+from django.urls import reverse_lazy
 from django.utils import timezone
+from django.utils.http import url_has_allowed_host_and_scheme
+from django.views import View
 from django.views.generic import DetailView, ListView, TemplateView
+from django.views.generic.edit import FormView
 
-from .models import Document, DocumentSnapshot, Organization
+from .forms import CodeLoginForm, EmailLoginForm, SuggestionForm
+from .models import (
+    Document,
+    DocumentSnapshot,
+    DocumentSubscription,
+    LoginCode,
+    Organization,
+    OrganizationSubscription,
+)
+from .services import (
+    LOGIN_CODE_TTL_MINUTES,
+    compute_hash,
+    generate_login_code,
+    send_login_code_email,
+)
+
+if TYPE_CHECKING:
+    from django.contrib.auth.models import AbstractBaseUser
 
 
 VALID_DAYS = (3, 7, 14, 30)
@@ -71,11 +98,9 @@ class DocumentDetailView(DetailView):
     def get_queryset(self):
         return Document.objects.select_related("organization")
 
-    def get_context_data(self, **kwargs):
+    def get_context_data(self, **kwargs) -> dict:
         context = super().get_context_data(**kwargs)
-        snapshots = (
-            self.object.snapshots.order_by("-captured_at")
-        )
+        snapshots = self.object.snapshots.order_by("-captured_at")
         context["snapshots"] = snapshots
         # Pair each snapshot with the one before it (older) for diff links
         snapshot_list = list(snapshots)
@@ -84,11 +109,18 @@ class DocumentDetailView(DetailView):
             older = snapshot_list[i + 1] if i + 1 < len(snapshot_list) else None
             pairs.append((snap, older))
         context["snapshot_pairs"] = pairs
+
+        user = self.request.user
+        context["is_subscribed"] = (
+            user.is_authenticated
+            and DocumentSubscription.objects.filter(user=user, document=self.object).exists()
+        )
         return context
 
 
 class SnapshotDiffView(DetailView):
     """Side-by-side diff between two snapshots of the same document."""
+
     model = Document
     template_name = "monitor/snapshot_diff.html"
     context_object_name = "document"
@@ -96,7 +128,7 @@ class SnapshotDiffView(DetailView):
     def get_queryset(self):
         return Document.objects.select_related("organization")
 
-    def get_context_data(self, **kwargs):
+    def get_context_data(self, **kwargs) -> dict:
         context = super().get_context_data(**kwargs)
         doc = self.object
 
@@ -104,7 +136,7 @@ class SnapshotDiffView(DetailView):
             snap_new = doc.snapshots.get(pk=self.kwargs["new_pk"])
             snap_old = doc.snapshots.get(pk=self.kwargs["old_pk"])
         except DocumentSnapshot.DoesNotExist:
-            raise Http404("Snapshot not found.")
+            raise Http404("Snapshot not found.") from None
 
         old_lines = snap_old.cleaned_text.splitlines()
         new_lines = snap_new.cleaned_text.splitlines()
@@ -126,11 +158,13 @@ class SnapshotDiffView(DetailView):
 
 class OrganizationsView(ListView):
     """Lists all organizations with their documents."""
+
     template_name = "monitor/organizations.html"
     context_object_name = "organizations"
 
     def get_queryset(self):
         from django.db.models import Count, Q
+
         return (
             Organization.objects.filter(parent__isnull=True)
             .annotate(
@@ -146,14 +180,26 @@ class OrganizationsView(ListView):
             .order_by("name")
         )
 
-    def get_context_data(self, **kwargs):
+    def get_context_data(self, **kwargs) -> dict:
         context = super().get_context_data(**kwargs)
         context["page_title"] = "Organizations"
+
+        user = self.request.user
+        if user.is_authenticated:
+            context["subscribed_org_ids"] = set(
+                OrganizationSubscription.objects.filter(user=user).values_list(
+                    "organization_id", flat=True
+                )
+            )
+        else:
+            context["subscribed_org_ids"] = set()
+
         return context
 
 
 class AboutView(TemplateView):
     """Static about page."""
+
     template_name = "monitor/about.html"
 
     def get_context_data(self, **kwargs):
@@ -164,6 +210,7 @@ class AboutView(TemplateView):
 
 class TermsView(TemplateView):
     """Terms of Use page."""
+
     template_name = "monitor/terms.html"
 
     def get_context_data(self, **kwargs):
@@ -174,6 +221,7 @@ class TermsView(TemplateView):
 
 class PrivacyView(TemplateView):
     """Privacy Policy page."""
+
     template_name = "monitor/privacy.html"
 
     def get_context_data(self, **kwargs):
@@ -184,6 +232,7 @@ class PrivacyView(TemplateView):
 
 class SnapshotTextView(DetailView):
     """Full plain-text view of a single snapshot."""
+
     model = DocumentSnapshot
     template_name = "monitor/snapshot_text.html"
     context_object_name = "snapshot"
@@ -198,3 +247,204 @@ class SnapshotTextView(DetailView):
         if obj.document_id != self.kwargs["pk"]:
             raise Http404("Snapshot does not belong to this document.")
         return obj
+
+
+# ---------------------------------------------------------------------------
+# OTP helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_or_create_user_by_email(email: str) -> AbstractBaseUser:
+    """Return the active user for *email*, creating an account on first login."""
+    User = get_user_model()
+    user = User.objects.filter(email__iexact=email).first()
+    if user is not None:
+        return user
+    base = email.split("@")[0][:140] or "user"
+    username = base
+    suffix = 1
+    while User.objects.filter(username=username).exists():
+        suffix += 1
+        username = f"{base[:130]}{suffix}"
+    return User.objects.create(username=username, email=email)
+
+
+def verify_login_code(email: str, code: str) -> AbstractBaseUser | None:
+    """Validate *code* for *email*; return the authenticated user or None."""
+    now = timezone.now()
+    latest = (
+        LoginCode.objects.filter(email=email, used_at__isnull=True, expires_at__gt=now)
+        .order_by("-created_at")
+        .first()
+    )
+    if latest is None:
+        return None
+    if not secrets.compare_digest(latest.code_hash, compute_hash(code.strip())):
+        return None
+    LoginCode.objects.filter(pk=latest.pk).update(used_at=now)
+    return _get_or_create_user_by_email(email)
+
+
+# ---------------------------------------------------------------------------
+# Website suggestion views
+# ---------------------------------------------------------------------------
+
+
+class SuggestDocumentView(FormView):
+    """Public form for suggesting a new company / policy document to track."""
+
+    template_name = "monitor/suggest_document.html"
+    form_class = SuggestionForm
+    success_url = reverse_lazy("monitor:suggestion_thanks")
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Suggest a website"
+        return context
+
+    def form_valid(self, form) -> HttpResponse:
+        form.save()
+        return super().form_valid(form)
+
+
+class SuggestionThanksView(TemplateView):
+    """Confirmation page shown after submitting a suggestion."""
+
+    template_name = "monitor/suggestion_thanks.html"
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Thanks for your suggestion"
+        return context
+
+
+# ---------------------------------------------------------------------------
+# OTP authentication views
+# ---------------------------------------------------------------------------
+
+
+class LoginRequestView(FormView):
+    """Step 1: collect an email address and email the user a one-time code."""
+
+    template_name = "monitor/login_request.html"
+    form_class = EmailLoginForm
+
+    def dispatch(self, request, *args, **kwargs) -> HttpResponse:
+        if request.user.is_authenticated:
+            return redirect("monitor:account")
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Log in"
+        return context
+
+    def form_valid(self, form) -> HttpResponse:
+        email = form.cleaned_data["email"]
+        # Invalidate any outstanding codes before issuing a fresh one.
+        LoginCode.objects.filter(email=email, used_at__isnull=True).update(used_at=timezone.now())
+        code = generate_login_code()
+        LoginCode.objects.create(
+            email=email,
+            code_hash=compute_hash(code),
+            expires_at=timezone.now() + timezone.timedelta(minutes=LOGIN_CODE_TTL_MINUTES),
+        )
+        send_login_code_email(email, code)
+        self.request.session["login_email"] = email
+        self.request.session["login_next"] = self.request.GET.get("next", "")
+        return redirect("monitor:login_verify")
+
+
+class LoginVerifyView(FormView):
+    """Step 2: verify the emailed one-time code and log the user in."""
+
+    template_name = "monitor/login_verify.html"
+    form_class = CodeLoginForm
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["email"] = self.request.session.get("login_email", "")
+        context["page_title"] = "Enter your login code"
+        return context
+
+    def form_valid(self, form) -> HttpResponse:
+        email = self.request.session.get("login_email", "")
+        if not email:
+            return redirect("monitor:login_request")
+
+        user = verify_login_code(email, form.cleaned_data["code"])
+        if user is None:
+            form.add_error("code", "That code is invalid or has expired.")
+            return self.form_invalid(form)
+
+        login(self.request, user)
+        self.request.session.pop("login_email", None)
+        next_url = self.request.session.pop("login_next", "")
+        if next_url and url_has_allowed_host_and_scheme(
+            next_url, allowed_hosts={self.request.get_host()}
+        ):
+            return redirect(next_url)
+        return redirect("monitor:account")
+
+
+# ---------------------------------------------------------------------------
+# Account & subscription views
+# ---------------------------------------------------------------------------
+
+
+class AccountView(LoginRequiredMixin, TemplateView):
+    """Signed-in user's dashboard: list their subscriptions."""
+
+    template_name = "monitor/account.html"
+    login_url = "/accounts/login/"
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Your account"
+        context["document_subscriptions"] = (
+            DocumentSubscription.objects.filter(user=self.request.user)
+            .select_related("document__organization")
+            .order_by("document__organization__name", "document__document_type")
+        )
+        context["organization_subscriptions"] = (
+            OrganizationSubscription.objects.filter(user=self.request.user)
+            .select_related("organization")
+            .order_by("organization__name")
+        )
+        return context
+
+
+class DocumentSubscribeView(LoginRequiredMixin, View):
+    """POST to subscribe the signed-in user to a document."""
+
+    def post(self, request, *args, **kwargs) -> HttpResponse:
+        document = get_object_or_404(Document, pk=kwargs["pk"])
+        DocumentSubscription.objects.get_or_create(user=request.user, document=document)
+        return redirect("monitor:document_detail", pk=document.pk)
+
+
+class DocumentUnsubscribeView(LoginRequiredMixin, View):
+    """POST to unsubscribe the signed-in user from a document."""
+
+    def post(self, request, *args, **kwargs) -> HttpResponse:
+        DocumentSubscription.objects.filter(user=request.user, document_id=kwargs["pk"]).delete()
+        return redirect("monitor:document_detail", pk=kwargs["pk"])
+
+
+class OrganizationSubscribeView(LoginRequiredMixin, View):
+    """POST to subscribe the signed-in user to all docs for an organization."""
+
+    def post(self, request, *args, **kwargs) -> HttpResponse:
+        organization = get_object_or_404(Organization, pk=kwargs["pk"])
+        OrganizationSubscription.objects.get_or_create(user=request.user, organization=organization)
+        return redirect("monitor:organizations")
+
+
+class OrganizationUnsubscribeView(LoginRequiredMixin, View):
+    """POST to unsubscribe the signed-in user from an organization."""
+
+    def post(self, request, *args, **kwargs) -> HttpResponse:
+        OrganizationSubscription.objects.filter(
+            user=request.user, organization_id=kwargs["pk"]
+        ).delete()
+        return redirect("monitor:organizations")

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}Thanks for Your Suggestion — TosDiff{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-7">
+    <div class="td-card p-5 text-center mb-4">
+      <h1 class="h3 mb-3" style="color: var(--td-primary-dark);">Thanks for your suggestion</h1>
+      <p style="color: var(--td-text-muted); max-width: 28rem; margin: 0 auto;">
+        We've received your suggestion and will review it soon. If there's a
+        follow-up question we'll reach out to you.
+      </p>
+      <div class="mt-4">
+        <a href="{% url 'monitor:home' %}" class="btn me-2"
+           style="background: var(--td-primary); color: #fff; border: none;">
+          Back to recent changes
+        </a>
+        <a href="{% url 'monitor:suggest' %}" class="btn"
+           style="border: 1px solid var(--td-border); color: var(--td-text-muted);">
+          Suggest another
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
