@@ -25,7 +25,7 @@
     </p>
   </div>
   <a href="{{ document.url }}" target="_blank" rel="noopener noreferrer"
-     class="btn btn-sm" style="border: 1px solid var(--td-border); color: var(--td-text-muted);">
+     class="btn btn-sm td-btn-outline">
     View live document ↗
   </a>
 </div>
@@ -35,24 +35,21 @@
     {% if is_subscribed %}
       <form method="post" action="{% url 'monitor:document_unsubscribe' document.pk %}">
         {% csrf_token %}
-        <button type="submit" class="btn btn-sm"
-                style="border: 1px solid var(--td-border); color: var(--td-text-muted);">
+        <button type="submit" class="btn btn-sm td-btn-outline">
           Unsubscribe
         </button>
       </form>
     {% else %}
       <form method="post" action="{% url 'monitor:document_subscribe' document.pk %}">
         {% csrf_token %}
-        <button type="submit" class="btn btn-sm"
-                style="background: var(--td-accent); color: #fff; border: none;">
+        <button type="submit" class="btn btn-sm td-btn-primary">
           Subscribe
         </button>
       </form>
     {% endif %}
   {% else %}
     <a href="{% url 'monitor:login_request' %}?next={{ request.path }}"
-       class="btn btn-sm"
-       style="border: 1px solid var(--td-border); color: var(--td-text-muted);">
+       class="btn btn-sm td-btn-outline">
       Log in to subscribe
     </a>
   {% endif %}
@@ -83,19 +80,18 @@
           </td>
           <td class="text-end">
             <a href="{% url 'monitor:snapshot_text' document.pk snap.pk %}"
-               class="btn btn-sm me-1"
-               style="border: 1px solid var(--td-primary); color: var(--td-primary);">
+               class="btn btn-sm td-btn-outline me-1"
+               style="border-color: var(--td-primary); color: var(--td-primary);">
               Full text
             </a>
             {% if older %}
             <a href="{% url 'monitor:snapshot_diff' document.pk older.pk snap.pk %}"
-               class="btn btn-sm"
-               style="border: 1px solid var(--td-border); color: var(--td-text-muted);">
+               class="btn btn-sm td-btn-outline">
               Diff vs previous
             </a>
             {% else %}
             <span class="btn btn-sm disabled" aria-disabled="true"
-                  style="border: 1px solid var(--td-border); color: var(--td-text-muted); opacity: 0.5;">
+                  style="opacity: 0.5;">
               No previous
             </span>
             {% endif %}

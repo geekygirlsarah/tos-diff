@@ -20,10 +20,44 @@ class SuggestionForm(forms.ModelForm):
             "notes",
         ]
         widgets = {
-            "organization_name": forms.TextInput(attrs={"placeholder": "e.g. Acme Corp"}),
-            "website_url": forms.URLInput(attrs={"placeholder": "https://example.com"}),
-            "document_url": forms.URLInput(attrs={"placeholder": "https://example.com/terms"}),
-            "notes": forms.Textarea(attrs={"rows": 4}),
+            "organization_name": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "e.g. Acme Corp",
+                }
+            ),
+            "website_url": forms.URLInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "https://example.com",
+                }
+            ),
+            "document_url": forms.URLInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "https://example.com/terms",
+                }
+            ),
+            "document_type": forms.Select(attrs={"class": "form-select"}),
+            "other_document_type": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "e.g. End-User License Agreement",
+                }
+            ),
+            "contact_email": forms.EmailInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "you@example.com",
+                }
+            ),
+            "notes": forms.Textarea(
+                attrs={
+                    "class": "form-control",
+                    "rows": 4,
+                    "placeholder": "Anything we should know about this document?",
+                }
+            ),
         }
 
 
@@ -32,7 +66,14 @@ class EmailLoginForm(forms.Form):
 
     email = forms.EmailField(
         label="Email address",
-        widget=forms.EmailInput(attrs={"autocomplete": "email", "autofocus": True}),
+        widget=forms.EmailInput(
+            attrs={
+                "class": "form-control",
+                "autocomplete": "email",
+                "autofocus": True,
+                "placeholder": "you@example.com",
+            }
+        ),
     )
 
     def clean_email(self) -> str:
@@ -48,6 +89,7 @@ class CodeLoginForm(forms.Form):
         min_length=6,
         widget=forms.TextInput(
             attrs={
+                "class": "form-control",
                 "inputmode": "numeric",
                 "autocomplete": "one-time-code",
                 "autofocus": True,

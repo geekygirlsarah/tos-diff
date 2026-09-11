@@ -50,7 +50,7 @@
           </time>
         </div>
         <a href="{% url 'monitor:snapshot_text' document.pk snap_old.pk %}"
-           class="btn btn-sm" style="border: 1px solid var(--td-border); color: var(--td-text-muted);">Full text</a>
+           class="btn btn-sm td-btn-outline">Full text</a>
       </div>
     </div>
   </div>
@@ -64,7 +64,7 @@
           </time>
         </div>
         <a href="{% url 'monitor:snapshot_text' document.pk snap_new.pk %}"
-           class="btn btn-sm" style="border: 1px solid var(--td-border); color: var(--td-text-muted);">Full text</a>
+           class="btn btn-sm td-btn-outline">Full text</a>
       </div>
     </div>
   </div>
@@ -76,7 +76,7 @@
 
 <div class="mt-3">
   <a href="{% url 'monitor:document_detail' document.pk %}"
-     class="btn btn-sm" style="border: 1px solid var(--td-border); color: var(--td-text-muted);">
+     class="btn btn-sm td-btn-outline">
     ← Back to timeline
   </a>
 </div>

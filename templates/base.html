@@ -29,6 +29,20 @@
     .td-navbar .navbar-brand {
       letter-spacing: -0.02em;
     }
+    .td-navbar .nav-link {
+      color: rgba(255, 255, 255, 0.85);
+    }
+    .td-navbar .nav-link:hover,
+    .td-navbar .nav-link:focus,
+    .td-navbar .nav-link.active {
+      color: #fff;
+    }
+    .td-navbar .navbar-toggler {
+      border-color: rgba(255, 255, 255, 0.35);
+    }
+    .td-navbar .navbar-toggler-icon {
+      background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'%3e%3cpath stroke='rgba%28255, 255, 255, 0.85%29' stroke-linecap='round' stroke-miterlimit='10' stroke-width='2' d='M4 7h22M4 15h22M4 23h22'/%3e%3c/svg%3e");
+    }
     .td-footer {
       background: #fff;
       border-top: 1px solid var(--td-border);
@@ -105,11 +119,41 @@
     a.td-card-link:hover {
       color: inherit;
     }
+    .td-btn-primary,
+    .td-btn-outline {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.35rem;
+    }
+    .td-btn-primary {
+      background: var(--td-primary);
+      color: #fff;
+      border: 1px solid transparent;
+      transition: background 0.15s ease;
+    }
+    .td-btn-primary:hover,
+    .td-btn-primary:focus {
+      background: var(--td-primary-dark);
+      color: #fff;
+    }
+    .td-btn-outline {
+      background: #fff;
+      color: var(--td-text-muted);
+      border: 1px solid var(--td-border);
+      transition: all 0.15s ease;
+    }
+    .td-btn-outline:hover,
+    .td-btn-outline:focus {
+      border-color: var(--td-primary);
+      color: var(--td-primary);
+      background: var(--td-primary-light);
+    }
   </style>
   {% block extra_css %}{% endblock %}
 </head>
 <body>
-  <nav class="navbar navbar-expand-lg td-navbar mb-0" aria-label="Main navigation">
+  <nav class="navbar navbar-expand-lg td-navbar navbar-dark mb-0" aria-label="Main navigation">
     <div class="container">
       <a class="navbar-brand fw-bold text-white" href="{% url 'monitor:home' %}">TosDiff</a>
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse"

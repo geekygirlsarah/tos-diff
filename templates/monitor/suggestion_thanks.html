@@ -6,18 +6,26 @@
 <div class="row justify-content-center">
   <div class="col-lg-7">
     <div class="td-card p-5 text-center mb-4">
-      <h1 class="h3 mb-3" style="color: var(--td-primary-dark);">Thanks for your suggestion</h1>
-      <p style="color: var(--td-text-muted); max-width: 28rem; margin: 0 auto;">
-        We've received your suggestion and will review it soon. If there's a
-        follow-up question we'll reach out to you.
+      <div class="mx-auto mb-3 d-flex align-items-center justify-content-center"
+           style="width: 3.75rem; height: 3.75rem; border-radius: 9999px;
+                  background: var(--td-primary-light);">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none"
+             stroke="var(--td-primary)" stroke-width="2.5"
+             stroke-linecap="round" stroke-linejoin="round" role="img"
+             aria-label="Success checkmark">
+          <path d="M20 6 9 17l-5-5"/>
+        </svg>
+      </div>
+      <h1 class="h3 mb-2" style="color: var(--td-primary-dark);">Thanks for your suggestion</h1>
+      <p style="color: var(--td-text-muted); max-width: 26rem; margin: 0 auto;">
+        We've received your suggestion and will review it soon. If there's a follow-up
+        question, we'll reach out to you using the contact details you provided.
       </p>
-      <div class="mt-4">
-        <a href="{% url 'monitor:home' %}" class="btn me-2"
-           style="background: var(--td-primary); color: #fff; border: none;">
+      <div class="mt-4 d-flex flex-wrap justify-content-center gap-2">
+        <a href="{% url 'monitor:home' %}" class="btn td-btn-primary">
           Back to recent changes
         </a>
-        <a href="{% url 'monitor:suggest' %}" class="btn"
-           style="border: 1px solid var(--td-border); color: var(--td-text-muted);">
+        <a href="{% url 'monitor:suggest' %}" class="btn td-btn-outline">
           Suggest another
         </a>
       </div>

@@ -24,16 +24,14 @@
           {% if org.pk in subscribed_org_ids %}
           <form method="post" action="{% url 'monitor:organization_unsubscribe' org.pk %}">
             {% csrf_token %}
-            <button type="submit" class="btn btn-sm"
-                    style="border: 1px solid var(--td-border); color: var(--td-text-muted);">
+            <button type="submit" class="btn btn-sm td-btn-outline">
               Following
             </button>
           </form>
           {% else %}
           <form method="post" action="{% url 'monitor:organization_subscribe' org.pk %}">
             {% csrf_token %}
-            <button type="submit" class="btn btn-sm"
-                    style="background: var(--td-accent); color: #fff; border: none;">
+            <button type="submit" class="btn btn-sm td-btn-primary">
               Subscribe
             </button>
           </form>
