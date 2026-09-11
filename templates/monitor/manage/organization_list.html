@@ -50,6 +50,7 @@
           <td class="text-end">
             <a class="btn btn-sm td-btn-outline" href="{% url 'monitor:manage_document_create_for_organization' org.pk %}">Add document</a>
             <a class="btn btn-sm td-btn-outline" href="{% url 'monitor:manage_organization_update' org.pk %}">Edit</a>
+            <a class="btn btn-sm td-btn-outline" href="{% url 'monitor:manage_organization_delete' org.pk %}" style="color:#991b1b;">Delete</a>
           </td>
         </tr>
         {% endfor %}

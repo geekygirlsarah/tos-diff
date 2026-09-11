@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page_title }} — TosDiff{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-7 col-lg-6">
+    <div class="td-card p-4 p-md-5">
+      <h1 class="h4 mb-3">{{ page_title }}?</h1>
+      <p class="mb-3">
+        Are you sure you want to permanently delete
+        <strong>{{ object }}</strong>? This cannot be undone.
+      </p>
+      {% if warnings %}
+      <ul class="small mb-4" style="color: #991b1b;">
+        {% for warning in warnings %}
+        <li>{{ warning }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      <form method="post">
+        {% csrf_token %}
+        <div class="d-flex flex-wrap gap-2">
+          <button type="submit" class="btn btn-danger">Delete</button>
+          <a href="{{ cancel_url }}" class="btn td-btn-outline">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

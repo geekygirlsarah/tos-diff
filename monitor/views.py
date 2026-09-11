@@ -3,6 +3,7 @@ import secrets
 from itertools import groupby
 from typing import TYPE_CHECKING
 
+from django.contrib import messages
 from django.contrib.auth import get_user_model, login
 from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.contrib.auth.views import LogoutView  # noqa: F401 – re-exported for urls
@@ -14,7 +15,7 @@ from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views import View
 from django.views.generic import DetailView, ListView, TemplateView
-from django.views.generic.edit import CreateView, FormView, UpdateView
+from django.views.generic.edit import CreateView, DeleteView, FormView, UpdateView
 
 from .forms import (
     CodeLoginForm,
@@ -41,6 +42,7 @@ from .services import (
     generate_login_code,
     send_login_code_email,
 )
+from .tasks import check_document
 
 if TYPE_CHECKING:
     from django.contrib.auth.models import AbstractBaseUser
@@ -723,4 +725,134 @@ class ManageTagUpdateView(SuperuserRequiredMixin, UpdateView):
     def get_context_data(self, **kwargs) -> dict:
         context = super().get_context_data(**kwargs)
         context["page_title"] = "Edit tag"
+        return context
+
+
+class ManageAttentionView(SuperuserRequiredMixin, TemplateView):
+    """Surfaces documents that need attention (failing, never checked, no snapshots)."""
+
+    template_name = "monitor/manage/attention.html"
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Needs attention"
+        context["failing_organizations"] = list(
+            Organization.objects.filter(is_failing=True).order_by("name")
+        )
+        context["failing_documents"] = list(
+            Document.objects.filter(is_failing=True)
+            .select_related("organization")
+            .order_by("organization__name", "document_type")
+        )
+        context["never_checked_documents"] = list(
+            Document.objects.filter(last_checked__isnull=True)
+            .select_related("organization")
+            .order_by("organization__name", "document_type")
+        )
+        context["no_snapshot_documents"] = list(
+            Document.objects.filter(snapshots__isnull=True)
+            .select_related("organization")
+            .order_by("organization__name", "document_type")
+        )
+        return context
+
+
+class ManageUserListView(SuperuserRequiredMixin, ListView):
+    """Browse registered users and their subscription counts."""
+
+    model = get_user_model()
+    template_name = "monitor/manage/user_list.html"
+    context_object_name = "users"
+    paginate_by = 50
+
+    def get_queryset(self):
+        qs = (
+            get_user_model()
+            .objects.annotate(
+                document_subscription_count=Count("document_subscriptions", distinct=True),
+                organization_subscription_count=Count(
+                    "organization_subscriptions", distinct=True
+                ),
+            )
+            .order_by("-is_superuser", "email")
+        )
+        query = self.request.GET.get("q", "").strip()
+        if query:
+            qs = qs.filter(Q(email__icontains=query) | Q(username__icontains=query))
+        return qs
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Users"
+        context["query"] = self.request.GET.get("q", "").strip()
+        return context
+
+
+class ManageDocumentCheckView(SuperuserRequiredMixin, View):
+    """POST-only: enqueue a fetch-and-snapshot for the given document now."""
+
+    def post(self, request, *args, **kwargs) -> HttpResponse:
+        document = get_object_or_404(Document, pk=kwargs["pk"])
+        check_document.delay(document.pk)
+        messages.success(request, f"Fetch queued for {document.display_name}.")
+        return redirect("monitor:manage_documents")
+
+
+class ManageOrganizationDeleteView(SuperuserRequiredMixin, DeleteView):
+    model = Organization
+    template_name = "monitor/manage/confirm_delete.html"
+    success_url = reverse_lazy("monitor:manage_organizations")
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = f"Delete {self.object.name}"
+        context["cancel_url"] = reverse_lazy("monitor:manage_organizations")
+        context["warnings"] = [
+            f"{self.object.documents.count()} tracked document(s) and their snapshots will be deleted.",
+            "All user subscriptions to this organization and its documents will be removed.",
+        ]
+        return context
+
+
+class ManageDocumentDeleteView(SuperuserRequiredMixin, DeleteView):
+    model = Document
+    template_name = "monitor/manage/confirm_delete.html"
+    success_url = reverse_lazy("monitor:manage_documents")
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = f"Delete {self.object.display_name}"
+        context["cancel_url"] = reverse_lazy("monitor:manage_documents")
+        context["warnings"] = [
+            f"{self.object.snapshots.count()} historical snapshot(s) will be deleted.",
+            "User subscriptions to this document will be removed.",
+        ]
+        return context
+
+
+class ManageTagDeleteView(SuperuserRequiredMixin, DeleteView):
+    model = Tag
+    template_name = "monitor/manage/confirm_delete.html"
+    success_url = reverse_lazy("monitor:manage_tags")
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = f"Delete tag: {self.object.name}"
+        context["cancel_url"] = reverse_lazy("monitor:manage_tags")
+        context["warnings"] = [
+            "The tag will be removed from all organizations it is attached to.",
+        ]
+        return context
+
+
+class ManageSuggestionDeleteView(SuperuserRequiredMixin, DeleteView):
+    model = Suggestion
+    template_name = "monitor/manage/confirm_delete.html"
+    success_url = reverse_lazy("monitor:manage_suggestions")
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = f"Delete suggestion: {self.object.organization_name}"
+        context["cancel_url"] = reverse_lazy("monitor:manage_suggestions")
+        context["warnings"] = ["This removes the submitted suggestion record permanently."]
         return context

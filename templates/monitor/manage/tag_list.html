@@ -34,6 +34,7 @@
           <td class="small" style="color: var(--td-text-muted);">{{ tag.slug }}</td>
           <td class="text-end">
             <a class="btn btn-sm td-btn-outline" href="{% url 'monitor:manage_tag_update' tag.pk %}">Edit</a>
+            <a class="btn btn-sm td-btn-outline" href="{% url 'monitor:manage_tag_delete' tag.pk %}" style="color:#991b1b;">Delete</a>
           </td>
         </tr>
         {% endfor %}

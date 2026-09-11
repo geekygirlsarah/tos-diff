@@ -68,8 +68,13 @@
             {% if doc.is_failing %}<span class="td-badge td-badge-error">Failing</span>{% endif %}
           </td>
           <td class="text-end">
+            <form method="post" action="{% url 'monitor:manage_document_check' doc.pk %}" class="d-inline">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm td-btn-outline">Check now</button>
+            </form>
             <a class="btn btn-sm td-btn-outline" href="{% url 'monitor:document_detail' doc.pk %}">View</a>
             <a class="btn btn-sm td-btn-outline" href="{% url 'monitor:manage_document_update' doc.pk %}">Edit</a>
+            <a class="btn btn-sm td-btn-outline" href="{% url 'monitor:manage_document_delete' doc.pk %}" style="color:#991b1b;">Delete</a>
           </td>
         </tr>
         {% endfor %}

@@ -1,0 +1,35 @@
+{% comment %}
+Shared panel for the needs-attention page.
+Expects: list_id, heading, items. Rows link to manage-edit pages.
+Organizations have no `organization` FK; Documents do.
+{% endcomment %}
+<div class="td-card mb-4" id="{{ list_id }}">
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 px-4 py-3 fw-semibold"
+       style="border-bottom: 1px solid var(--td-border);">
+    <span>{{ heading }}</span>
+    <span class="td-badge" style="background: var(--td-surface); color: var(--td-text-muted);">{{ items|length }}</span>
+  </div>
+  {% if items %}
+  <div>
+    {% for item in items %}
+    {% if item.organization %}
+    <a href="{% url 'monitor:manage_document_update' item.pk %}" class="td-card-row">
+      <span>{{ item.organization.name }} — {{ item.display_name }}</span>
+      <span class="small" style="color: var(--td-text-muted);">{{ item.url }}</span>
+      {% if item.is_failing %}<span class="td-badge td-badge-error">Failing</span>{% endif %}
+      {% if not item.last_checked %}<span class="td-badge" style="background: #fef3c7; color: #92400e;">Never checked</span>{% endif %}
+      {% if item.snapshots.count == 0 %}<span class="td-badge" style="background: var(--td-surface); color: var(--td-text-muted);">No snapshots</span>{% endif %}
+    </a>
+    {% else %}
+    <a href="{% url 'monitor:manage_organization_update' item.pk %}" class="td-card-row">
+      <span>{{ item.name }}</span>
+      <span class="td-badge td-badge-other">{{ item.get_category_display|default:"Other" }}</span>
+      <span class="td-badge td-badge-error">Failing</span>
+    </a>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="px-4 py-3 mb-0" style="color: var(--td-text-muted);">Nothing here.</p>
+  {% endif %}
+</div>

@@ -72,6 +72,7 @@
               <a class="btn btn-sm td-btn-primary" href="{% url 'monitor:manage_suggestion_approve' suggestion.pk %}">Approve</a>
               <a class="btn btn-sm td-btn-outline" href="{% url 'monitor:manage_suggestion_reject' suggestion.pk %}">Reject</a>
             {% endif %}
+            <a class="btn btn-sm td-btn-outline" href="{% url 'monitor:manage_suggestion_delete' suggestion.pk %}" style="color:#991b1b;">Delete</a>
           </td>
         </tr>
         {% endfor %}

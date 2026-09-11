@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page_title }} — TosDiff{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-4">
+  <div>
+    <h1 class="h3 mb-0">{{ page_title }}</h1>
+    <p class="mb-0 small" style="color: var(--td-text-muted);">
+      <a href="{% url 'monitor:manage_dashboard' %}">Manage</a> / Documents needing attention
+    </p>
+  </div>
+  <a class="btn td-btn-outline" href="{% url 'monitor:manage_documents' %}">View all documents</a>
+</div>
+
+{% with list_id="failing-orgs" heading="Failing organizations" items=failing_organizations %}
+  {% include "monitor/manage/_attention_panel.html" %}
+{% endwith %}
+
+{% with list_id="failing-docs" heading="Failing documents" items=failing_documents %}
+  {% include "monitor/manage/_attention_panel.html" %}
+{% endwith %}
+
+{% with list_id="never-checked" heading="Never checked" items=never_checked_documents %}
+  {% include "monitor/manage/_attention_panel.html" %}
+{% endwith %}
+
+{% with list_id="no-snapshots" heading="No snapshots yet" items=no_snapshot_documents %}
+  {% include "monitor/manage/_attention_panel.html" %}
+{% endwith %}
+{% endblock %}

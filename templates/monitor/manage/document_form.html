@@ -40,9 +40,17 @@
           {% include "monitor/manage/_field.html" with field=form.fetch_config col_class="col-12" %}
           {% include "monitor/manage/_field.html" with field=form.is_active col_class="col-md-6" %}
           {% include "monitor/manage/_field.html" with field=form.is_failing col_class="col-md-6" %}
-          <div class="col-12 d-flex flex-wrap gap-2">
+          <div class="col-12 d-flex flex-wrap gap-2 align-items-center">
             <button type="submit" class="btn td-btn-primary">Save document</button>
             <a href="{% url 'monitor:manage_documents' %}" class="btn td-btn-outline">Cancel</a>
+            {% if object %}
+              <form method="post" action="{% url 'monitor:manage_document_check' object.pk %}" class="d-inline">
+                {% csrf_token %}
+                <button type="submit" class="btn td-btn-outline">Check now</button>
+              </form>
+              <a href="{% url 'monitor:manage_document_delete' object.pk %}"
+                 class="btn td-btn-outline ms-auto" style="color:#991b1b;">Delete document</a>
+            {% endif %}
           </div>
         </div>
       </form>

@@ -7,6 +7,7 @@ Run with:  python manage.py test monitor
 from unittest.mock import MagicMock, patch
 
 import requests
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.db import IntegrityError
@@ -36,6 +37,7 @@ from .services import (
     fetch_and_snapshot,
     fetch_pdf_bytes,
     generate_login_code,
+    make_unsubscribe_token,
     send_login_code_email,
 )
 from .tasks import send_change_notifications
@@ -1938,22 +1940,38 @@ class ManageAccessControlTest(TestCase):
             reverse("monitor:manage_organizations"),
             reverse("monitor:manage_organization_create"),
             reverse("monitor:manage_organization_update", args=[self.org.pk]),
+            reverse("monitor:manage_organization_delete", args=[self.org.pk]),
             reverse("monitor:manage_documents"),
             reverse("monitor:manage_document_create"),
             reverse("monitor:manage_document_create_for_organization", args=[self.org.pk]),
             reverse("monitor:manage_document_update", args=[self.doc.pk]),
+            reverse("monitor:manage_document_delete", args=[self.doc.pk]),
             reverse("monitor:manage_suggestions"),
             reverse("monitor:manage_suggestion_approve", args=[self.suggestion.pk]),
             reverse("monitor:manage_suggestion_reject", args=[self.suggestion.pk]),
+            reverse("monitor:manage_suggestion_delete", args=[self.suggestion.pk]),
             reverse("monitor:manage_tags"),
             reverse("monitor:manage_tag_create"),
             reverse("monitor:manage_tag_update", args=[self.tag.pk]),
+            reverse("monitor:manage_tag_delete", args=[self.tag.pk]),
+            reverse("monitor:manage_attention"),
+            reverse("monitor:manage_users"),
+        ]
+
+    def _manage_post_urls(self):
+        return [
+            reverse("monitor:manage_document_check", args=[self.doc.pk]),
         ]
 
     def test_anonymous_users_redirected_to_login(self):
         for url in self._manage_urls():
             with self.subTest(url=url):
                 response = self.client.get(url)
+                self.assertEqual(response.status_code, 302)
+                self.assertIn("/accounts/login/", response.url)
+        for url in self._manage_post_urls():
+            with self.subTest(url=url):
+                response = self.client.post(url)
                 self.assertEqual(response.status_code, 302)
                 self.assertIn("/accounts/login/", response.url)
 
@@ -1963,6 +1981,10 @@ class ManageAccessControlTest(TestCase):
         for url in self._manage_urls():
             with self.subTest(url=url):
                 response = self.client.get(url)
+                self.assertEqual(response.status_code, 403)
+        for url in self._manage_post_urls():
+            with self.subTest(url=url):
+                response = self.client.post(url)
                 self.assertEqual(response.status_code, 403)
 
     def test_superusers_can_access(self):
@@ -2165,3 +2187,297 @@ class ManageTagViewsTest(TestCase):
         self.assertRedirects(response, reverse("monitor:manage_tags"))
         self.tag.refresh_from_db()
         self.assertEqual(self.tag.name, "Fintech & Banking")
+
+
+class ManageDeleteViewsTest(TestCase):
+    """Superusers can permanently delete orgs/docs/tags/suggestions with confirmation."""
+
+    def setUp(self):
+        _login_as_superuser(self.client)
+        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.doc = Document.objects.create(organization=self.org, url="https://acme.com/tos")
+        self.tag = Tag.objects.create(name="Fintech")
+        self.suggestion = Suggestion.objects.create(
+            organization_name="Globex",
+            website_url="https://globex.example.com",
+            document_url="https://globex.example.com/tos",
+        )
+
+    def test_confirm_page_shows_object_name(self):
+        response = self.client.get(
+            reverse("monitor:manage_organization_delete", args=[self.org.pk])
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Acme")
+
+    def test_delete_organization(self):
+        response = self.client.post(
+            reverse("monitor:manage_organization_delete", args=[self.org.pk])
+        )
+        self.assertRedirects(response, reverse("monitor:manage_organizations"))
+        self.assertFalse(Organization.objects.filter(pk=self.org.pk).exists())
+        self.assertFalse(Document.objects.filter(organization_id=self.org.pk).exists())
+
+    def test_delete_document(self):
+        response = self.client.post(
+            reverse("monitor:manage_document_delete", args=[self.doc.pk])
+        )
+        self.assertRedirects(response, reverse("monitor:manage_documents"))
+        self.assertFalse(Document.objects.filter(pk=self.doc.pk).exists())
+
+    def test_delete_tag(self):
+        response = self.client.post(reverse("monitor:manage_tag_delete", args=[self.tag.pk]))
+        self.assertRedirects(response, reverse("monitor:manage_tags"))
+        self.assertFalse(Tag.objects.filter(pk=self.tag.pk).exists())
+
+    def test_delete_suggestion(self):
+        response = self.client.post(
+            reverse("monitor:manage_suggestion_delete", args=[self.suggestion.pk])
+        )
+        self.assertRedirects(response, reverse("monitor:manage_suggestions"))
+        self.assertFalse(Suggestion.objects.filter(pk=self.suggestion.pk).exists())
+
+
+class ManageDocumentCheckTest(TestCase):
+    """The "Check now" action enqueues a fetch for a single document."""
+
+    def setUp(self):
+        _login_as_superuser(self.client)
+        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.doc = Document.objects.create(organization=self.org, url="https://acme.com/tos")
+
+    @patch("monitor.views.check_document")
+    def test_check_now_enqueues_fetch(self, mock_task):
+        response = self.client.post(
+            reverse("monitor:manage_document_check", args=[self.doc.pk])
+        )
+        self.assertRedirects(response, reverse("monitor:manage_documents"))
+        mock_task.delay.assert_called_once_with(self.doc.pk)
+
+    @patch("monitor.views.check_document")
+    def test_check_now_announces_success(self, mock_task):
+        self.client.post(reverse("monitor:manage_document_check", args=[self.doc.pk]))
+        response = self.client.get(reverse("monitor:manage_documents"))
+        self.assertContains(response, "Fetch queued for Terms of Service")
+
+    def test_check_now_denied_to_regular_user(self):
+        get_user_model().objects.create_user(username="bob", email="bob@example.com", password="x")
+        self.client.login(username="bob", password="x")
+        response = self.client.post(
+            reverse("monitor:manage_document_check", args=[self.doc.pk])
+        )
+        self.assertEqual(response.status_code, 403)
+
+
+class ManageAttentionViewTest(TestCase):
+    """The needs-attention page lists failing, never-checked, and snapshot-less docs."""
+
+    def setUp(self):
+        _login_as_superuser(self.client)
+        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.failing_doc = Document.objects.create(
+            organization=self.org, url="https://acme.com/fail", is_failing=True
+        )
+        self.never_checked = Document.objects.create(
+            organization=self.org, url="https://acme.com/new"
+        )
+        self.ok_doc = Document.objects.create(
+            organization=self.org,
+            url="https://acme.com/ok",
+            last_checked=timezone.now(),
+            last_changed=timezone.now(),
+        )
+        DocumentSnapshot.objects.create(
+            document=self.ok_doc, cleaned_text="text", text_hash="hash"
+        )
+
+    def test_page_renders(self):
+        response = self.client.get(reverse("monitor:manage_attention"))
+        self.assertEqual(response.status_code, 200)
+
+    def test_context_lists_problem_documents(self):
+        response = self.client.get(reverse("monitor:manage_attention"))
+        context = response.context
+        self.assertIn(self.failing_doc.pk, [d.pk for d in context["failing_documents"]])
+        self.assertIn(self.never_checked.pk, [d.pk for d in context["never_checked_documents"]])
+        self.assertNotIn(self.ok_doc.pk, [d.pk for d in context["never_checked_documents"]])
+
+    def test_no_snapshot_flagged(self):
+        response = self.client.get(reverse("monitor:manage_attention"))
+        context = response.context
+        self.assertIn(self.never_checked.pk, [d.pk for d in context["no_snapshot_documents"]])
+
+
+class ManageUserListViewTest(TestCase):
+    """Admins can browse user accounts and their subscription counts."""
+
+    def setUp(self):
+        _login_as_superuser(self.client)
+        self.user = get_user_model().objects.create_user(
+            username="bob", email="bob@example.com", password="x"
+        )
+
+    def test_user_list_shows_users(self):
+        response = self.client.get(reverse("monitor:manage_users"))
+        self.assertContains(response, "bob@example.com")
+        self.assertContains(response, "root@example.com")
+
+    def test_user_list_search(self):
+        response = self.client.get(reverse("monitor:manage_users"), {"q": "bob"})
+        self.assertContains(response, "bob@example.com")
+        self.assertNotContains(response, "root@example.com")
+
+    def test_user_list_counts_subscriptions(self):
+        org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        doc = Document.objects.create(organization=org, url="https://acme.com/tos")
+        DocumentSubscription.objects.create(user=self.user, document=doc)
+        OrganizationSubscription.objects.create(user=self.user, organization=org)
+        response = self.client.get(reverse("monitor:manage_users"))
+        user_row = next(u for u in response.context["users"] if u.username == "bob")
+        self.assertEqual(user_row.document_subscription_count, 1)
+        self.assertEqual(user_row.organization_subscription_count, 1)
+
+
+class ChangeMessageUnsubscribeLinkTest(TestCase):
+    """Change notification emails include a per-user unsubscribe link."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.doc = Document.objects.create(organization=self.org, url="https://acme.com/tos")
+        self.old = DocumentSnapshot.objects.create(
+            document=self.doc, cleaned_text="v1", text_hash="h1"
+        )
+        self.new = DocumentSnapshot.objects.create(
+            document=self.doc, cleaned_text="v2", text_hash="h2"
+        )
+
+    def test_message_includes_unsubscribe_link(self):
+        subject, plain, html = build_snapshot_change_message(
+            self.doc, self.new, self.old, "https://example.com", "https://example.com/unsub/abc"
+        )
+        self.assertIn("Unsubscribe", plain)
+        self.assertIn("https://example.com/unsub/abc", plain)
+        self.assertIn('href="https://example.com/unsub/abc"', html)
+
+    def test_no_unsubscribe_link_when_omitted(self):
+        subject, plain, html = build_snapshot_change_message(
+            self.doc, self.new, self.old, "https://example.com"
+        )
+        self.assertNotIn("Unsubscribe", plain)
+
+
+class UnsubscribeTokenViewTest(TestCase):
+    """A signed unsubscribe link removes a document subscription without logging in."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.doc = Document.objects.create(organization=self.org, url="https://acme.com/tos")
+        self.user = get_user_model().objects.create_user(
+            username="bob", email="bob@example.com"
+        )
+
+    def test_valid_token_removes_document_subscription(self):
+        DocumentSubscription.objects.create(user=self.user, document=self.doc)
+        token = make_unsubscribe_token(self.user.pk, self.doc.pk)
+        response = self.client.get(reverse("monitor:unsubscribe_token", args=[token]))
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(
+            DocumentSubscription.objects.filter(user=self.user, document=self.doc).exists()
+        )
+
+    def test_valid_token_without_subscription_is_harmless(self):
+        token = make_unsubscribe_token(self.user.pk, self.doc.pk)
+        response = self.client.get(reverse("monitor:unsubscribe_token", args=[token]))
+        self.assertEqual(response.status_code, 200)
+
+    def test_invalid_token_returns_404(self):
+        response = self.client.get(
+            reverse("monitor:unsubscribe_token", args=["not-a-real-token"])
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_does_not_remove_organization_subscription(self):
+        OrganizationSubscription.objects.create(user=self.user, organization=self.org)
+        token = make_unsubscribe_token(self.user.pk, self.doc.pk)
+        self.client.get(reverse("monitor:unsubscribe_token", args=[token]))
+        self.assertTrue(
+            OrganizationSubscription.objects.filter(user=self.user, organization=self.org).exists()
+        )
+
+
+class SuggestionReviewEmailsTest(TestCase):
+    """Approving/rejecting a suggestion emails the submitter."""
+
+    def setUp(self):
+        _login_as_superuser(self.client)
+        self.suggestion = Suggestion.objects.create(
+            organization_name="Globex",
+            website_url="https://globex.example.com",
+            document_url="https://globex.example.com/privacy",
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+            contact_email="submitter@example.com",
+        )
+
+    def test_approve_emails_submitter(self):
+        self.client.post(
+            reverse("monitor:manage_suggestion_approve", args=[self.suggestion.pk]), {}
+        )
+        self.assertEqual(len(mail.outbox), 1)
+        email = mail.outbox[0]
+        self.assertEqual(email.to, ["submitter@example.com"])
+        self.assertIn("approved", email.subject.lower())
+
+    def test_approve_email_links_the_new_document(self):
+        self.client.post(
+            reverse("monitor:manage_suggestion_approve", args=[self.suggestion.pk]), {}
+        )
+        org = Organization.objects.get(website_url="https://globex.example.com")
+        doc = Document.objects.get(organization=org)
+        email = mail.outbox[0]
+        self.assertIn(f"/document/{doc.pk}/", email.body)
+
+    def test_reject_emails_submitter_with_notes(self):
+        self.client.post(
+            reverse("monitor:manage_suggestion_reject", args=[self.suggestion.pk]),
+            {"review_notes": "Duplicate of existing"},
+        )
+        self.assertEqual(len(mail.outbox), 1)
+        email = mail.outbox[0]
+        self.assertIn("not approved", email.subject.lower())
+        self.assertIn("Duplicate of existing", email.body)
+
+    def test_no_email_when_no_contact(self):
+        self.suggestion.contact_email = ""
+        self.suggestion.save()
+        self.client.post(
+            reverse("monitor:manage_suggestion_approve", args=[self.suggestion.pk]), {}
+        )
+        self.assertEqual(len(mail.outbox), 0)
+
+
+class ManageSuggestionDedupeTest(TestCase):
+    """Suggestions whose website already exists are flagged as duplicates."""
+
+    def setUp(self):
+        _login_as_superuser(self.client)
+
+    def test_duplicate_flag_when_org_exists(self):
+        Organization.objects.create(name="Existing", website_url="https://globex.example.com")
+        Suggestion.objects.create(
+            organization_name="Globex",
+            website_url="https://globex.example.com",
+            document_url="https://globex.example.com/tos",
+        )
+        response = self.client.get(reverse("monitor:manage_suggestions"))
+        suggestion = response.context["suggestions"][0]
+        self.assertTrue(suggestion.is_duplicate)
+
+    def test_duplicate_flag_false_when_org_missing(self):
+        Suggestion.objects.create(
+            organization_name="Fresh Co",
+            website_url="https://fresh.example.com",
+            document_url="https://fresh.example.com/tos",
+        )
+        response = self.client.get(reverse("monitor:manage_suggestions"))
+        suggestion = response.context["suggestions"][0]
+        self.assertFalse(suggestion.is_duplicate)

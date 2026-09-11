@@ -36,6 +36,10 @@
         <div class="d-flex flex-wrap gap-2">
           <button type="submit" class="btn td-btn-primary">Save tag</button>
           <a href="{% url 'monitor:manage_tags' %}" class="btn td-btn-outline">Cancel</a>
+          {% if object %}
+          <a href="{% url 'monitor:manage_tag_delete' object.pk %}"
+             class="btn td-btn-outline ms-auto" style="color:#991b1b;">Delete tag</a>
+          {% endif %}
         </div>
       </form>
     </div>
