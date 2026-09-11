@@ -1902,3 +1902,266 @@ class CheckDocumentNotificationDispatchTest(TestCase):
         with patch("monitor.tasks.send_change_notifications.delay") as mock_delay:
             check_document(self.doc.pk)
         mock_delay.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Management (superuser CRUD) view tests
+# ---------------------------------------------------------------------------
+
+
+def _login_as_superuser(client):
+    """Create and force-login a superuser for the given test client."""
+    superuser = get_user_model().objects.create_superuser(
+        username="root", email="root@example.com", password="secret123"
+    )
+    client.force_login(superuser)
+    return superuser
+
+
+class ManageAccessControlTest(TestCase):
+    """Only superusers may access the /manage/ pages."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.doc = Document.objects.create(organization=self.org, url="https://acme.com/tos")
+        self.tag = Tag.objects.create(name="Fintech")
+        self.suggestion = Suggestion.objects.create(
+            organization_name="Globex",
+            website_url="https://globex.example.com",
+            document_url="https://globex.example.com/tos",
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+        )
+
+    def _manage_urls(self):
+        return [
+            reverse("monitor:manage_dashboard"),
+            reverse("monitor:manage_organizations"),
+            reverse("monitor:manage_organization_create"),
+            reverse("monitor:manage_organization_update", args=[self.org.pk]),
+            reverse("monitor:manage_documents"),
+            reverse("monitor:manage_document_create"),
+            reverse("monitor:manage_document_create_for_organization", args=[self.org.pk]),
+            reverse("monitor:manage_document_update", args=[self.doc.pk]),
+            reverse("monitor:manage_suggestions"),
+            reverse("monitor:manage_suggestion_approve", args=[self.suggestion.pk]),
+            reverse("monitor:manage_suggestion_reject", args=[self.suggestion.pk]),
+            reverse("monitor:manage_tags"),
+            reverse("monitor:manage_tag_create"),
+            reverse("monitor:manage_tag_update", args=[self.tag.pk]),
+        ]
+
+    def test_anonymous_users_redirected_to_login(self):
+        for url in self._manage_urls():
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 302)
+                self.assertIn("/accounts/login/", response.url)
+
+    def test_regular_users_are_forbidden(self):
+        get_user_model().objects.create_user(username="bob", email="bob@example.com", password="x")
+        self.client.login(username="bob", password="x")
+        for url in self._manage_urls():
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 403)
+
+    def test_superusers_can_access(self):
+        _login_as_superuser(self.client)
+        for url in self._manage_urls():
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 200)
+
+
+class ManageDashboardTest(TestCase):
+    def setUp(self):
+        _login_as_superuser(self.client)
+
+    def test_dashboard_shows_counts(self):
+        Organization.objects.create(name="Acme", website_url="https://acme.com")
+        org = Organization.objects.get(name="Acme")
+        Document.objects.create(organization=org, url="https://acme.com/tos")
+        Suggestion.objects.create(
+            organization_name="Globex",
+            website_url="https://globex.example.com",
+            document_url="https://globex.example.com/tos",
+        )
+        response = self.client.get(reverse("monitor:manage_dashboard"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["organization_count"], 1)
+        self.assertEqual(response.context["document_count"], 1)
+        self.assertEqual(response.context["pending_suggestion_count"], 1)
+
+
+class ManageOrganizationViewsTest(TestCase):
+    def setUp(self):
+        _login_as_superuser(self.client)
+        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+
+    def test_list_shows_organizations(self):
+        response = self.client.get(reverse("monitor:manage_organizations"))
+        self.assertContains(response, "Acme")
+
+    def test_create_organization(self):
+        response = self.client.post(
+            reverse("monitor:manage_organization_create"),
+            {
+                "name": "Globex",
+                "website_url": "https://globex.example.com",
+                "category": Organization.Category.TECHNOLOGY,
+            },
+        )
+        self.assertRedirects(response, reverse("monitor:manage_organizations"))
+        org = Organization.objects.get(name="Globex")
+        self.assertEqual(org.slug, "globex")
+        self.assertEqual(org.website_url, "https://globex.example.com")
+
+    def test_create_requires_website_url(self):
+        response = self.client.post(
+            reverse("monitor:manage_organization_create"), {"name": "No URL"}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Organization.objects.filter(name="No URL").exists())
+
+    def test_update_organization(self):
+        response = self.client.post(
+            reverse("monitor:manage_organization_update", args=[self.org.pk]),
+            {"name": "Acme Inc", "website_url": self.org.website_url},
+        )
+        self.assertRedirects(response, reverse("monitor:manage_organizations"))
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.name, "Acme Inc")
+
+    def test_update_form_prefilled(self):
+        response = self.client.get(
+            reverse("monitor:manage_organization_update", args=[self.org.pk])
+        )
+        self.assertContains(response, 'value="Acme"')
+
+
+class ManageDocumentViewsTest(TestCase):
+    def setUp(self):
+        _login_as_superuser(self.client)
+        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+
+    def _doc_payload(self, **overrides):
+        payload = {
+            "organization": self.org.pk,
+            "name": "",
+            "document_type": Document.DocumentType.TERMS_OF_SERVICE,
+            "other_document_type": "",
+            "url": "https://acme.example.com/terms",
+            "fetch_method": Document.FetchMethod.REQUESTS,
+            "document_format": Document.DocumentFormat.HTML,
+            "custom_selectors": "",
+            "fetch_config": "",
+            "is_active": "on",
+            "is_failing": "",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_list_shows_documents(self):
+        Document.objects.create(organization=self.org, url="https://acme.example.com/terms")
+        response = self.client.get(reverse("monitor:manage_documents"))
+        self.assertContains(response, "Terms of Service")
+
+    def test_create_document(self):
+        response = self.client.post(reverse("monitor:manage_document_create"), self._doc_payload())
+        self.assertRedirects(response, reverse("monitor:manage_documents"))
+        Document.objects.get(organization=self.org, url="https://acme.example.com/terms")
+
+    def test_create_document_preselects_organization(self):
+        form = self.client.get(
+            reverse("monitor:manage_document_create_for_organization", args=[self.org.pk])
+        ).context["form"]
+        self.assertEqual(form.initial["organization"], self.org.pk)
+
+    def test_update_document(self):
+        doc = Document.objects.create(organization=self.org, url="https://acme.example.com/terms")
+        response = self.client.post(
+            reverse("monitor:manage_document_update", args=[doc.pk]),
+            self._doc_payload(name="Company Terms", url="https://acme.example.com/terms"),
+        )
+        self.assertRedirects(response, reverse("monitor:manage_documents"))
+        doc.refresh_from_db()
+        self.assertEqual(doc.name, "Company Terms")
+
+    def test_duplicate_document_rejected(self):
+        Document.objects.create(organization=self.org, url="https://acme.example.com/terms")
+        response = self.client.post(reverse("monitor:manage_document_create"), self._doc_payload())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Document.objects.count(), 1)
+
+
+class ManageSuggestionViewsTest(TestCase):
+    def setUp(self):
+        _login_as_superuser(self.client)
+        self.suggestion = Suggestion.objects.create(
+            organization_name="Globex",
+            website_url="https://globex.example.com",
+            document_url="https://globex.example.com/privacy",
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+        )
+
+    def test_list_shows_pending_suggestions(self):
+        response = self.client.get(reverse("monitor:manage_suggestions"))
+        self.assertContains(response, "Globex")
+
+    def test_approve_page_shows_details(self):
+        response = self.client.get(
+            reverse("monitor:manage_suggestion_approve", args=[self.suggestion.pk])
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Globex")
+
+    def test_approve_converts_suggestion(self):
+        response = self.client.post(
+            reverse("monitor:manage_suggestion_approve", args=[self.suggestion.pk]),
+            {"review_notes": "Looks good"},
+        )
+        self.assertRedirects(response, reverse("monitor:manage_suggestions"))
+        self.suggestion.refresh_from_db()
+        self.assertEqual(self.suggestion.status, Suggestion.Status.APPROVED)
+        self.assertIsNotNone(self.suggestion.reviewed_at)
+        self.assertEqual(self.suggestion.review_notes, "Looks good")
+        org = Organization.objects.get(website_url="https://globex.example.com")
+        self.assertTrue(
+            Document.objects.filter(
+                organization=org, document_type=Document.DocumentType.PRIVACY_POLICY
+            ).exists()
+        )
+
+    def test_reject_marks_suggestion_rejected(self):
+        response = self.client.post(
+            reverse("monitor:manage_suggestion_reject", args=[self.suggestion.pk]),
+            {"review_notes": "Duplicate"},
+        )
+        self.assertRedirects(response, reverse("monitor:manage_suggestions"))
+        self.suggestion.refresh_from_db()
+        self.assertEqual(self.suggestion.status, Suggestion.Status.REJECTED)
+        self.assertFalse(Document.objects.exists())
+
+
+class ManageTagViewsTest(TestCase):
+    def setUp(self):
+        _login_as_superuser(self.client)
+        self.tag = Tag.objects.create(name="Fintech")
+
+    def test_list_shows_tags(self):
+        response = self.client.get(reverse("monitor:manage_tags"))
+        self.assertContains(response, "Fintech")
+
+    def test_create_tag(self):
+        response = self.client.post(reverse("monitor:manage_tag_create"), {"name": "Open Source"})
+        self.assertRedirects(response, reverse("monitor:manage_tags"))
+        tag = Tag.objects.get(name="Open Source")
+        self.assertEqual(tag.slug, "open-source")
+
+    def test_update_tag(self):
+        response = self.client.post(
+            reverse("monitor:manage_tag_update", args=[self.tag.pk]), {"name": "Fintech & Banking"}
+        )
+        self.assertRedirects(response, reverse("monitor:manage_tags"))
+        self.tag.refresh_from_db()
+        self.assertEqual(self.tag.name, "Fintech & Banking")

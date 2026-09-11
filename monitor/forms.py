@@ -1,8 +1,10 @@
-"""Forms for user-submitted website suggestions and passwordless (OTP) login."""
+"""Forms for user-submitted website suggestions, passwordless (OTP) login, and superuser management."""
+
+import json
 
 from django import forms
 
-from .models import Suggestion
+from .models import Document, Organization, Suggestion, Tag
 
 
 class SuggestionForm(forms.ModelForm):
@@ -103,3 +105,108 @@ class CodeLoginForm(forms.Form):
         if not code.isdigit():
             raise forms.ValidationError("Enter the 6-digit code from your email.")
         return code
+
+
+# ---------------------------------------------------------------------------
+# Superuser management forms
+# ---------------------------------------------------------------------------
+
+
+class _JsonTextarea(forms.Textarea):
+    """Textarea that pretty-prints JSON for editing and shows blank for None."""
+
+    def format_value(self, value):
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        try:
+            return json.dumps(value, indent=2, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return super().format_value(value)
+
+
+class TagForm(forms.ModelForm):
+    """Superuser form for creating/editing tags."""
+
+    class Meta:
+        model = Tag
+        fields = ["name"]
+        widgets = {
+            "name": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "autofocus": True,
+                    "placeholder": "e.g. Governance",
+                }
+            ),
+        }
+
+
+class OrganizationForm(forms.ModelForm):
+    """Superuser form for creating/editing tracked organizations."""
+
+    class Meta:
+        model = Organization
+        fields = ["name", "website_url", "category", "tags", "parent", "is_failing"]
+        widgets = {
+            "name": forms.TextInput(attrs={"class": "form-control", "autofocus": True}),
+            "website_url": forms.URLInput(attrs={"class": "form-control"}),
+            "category": forms.Select(attrs={"class": "form-select"}),
+            "tags": forms.SelectMultiple(attrs={"class": "form-select"}),
+            "parent": forms.Select(attrs={"class": "form-select"}),
+            "is_failing": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+        }
+
+
+class DocumentForm(forms.ModelForm):
+    """Superuser form for creating/editing tracked documents."""
+
+    class Meta:
+        model = Document
+        fields = [
+            "organization",
+            "name",
+            "document_type",
+            "other_document_type",
+            "url",
+            "fetch_method",
+            "document_format",
+            "language",
+            "country",
+            "is_active",
+            "is_failing",
+            "custom_selectors",
+            "fetch_config",
+        ]
+        widgets = {
+            "organization": forms.Select(attrs={"class": "form-select"}),
+            "name": forms.TextInput(attrs={"class": "form-control"}),
+            "document_type": forms.Select(attrs={"class": "form-select"}),
+            "other_document_type": forms.TextInput(attrs={"class": "form-control"}),
+            "url": forms.URLInput(attrs={"class": "form-control"}),
+            "fetch_method": forms.Select(attrs={"class": "form-select"}),
+            "document_format": forms.Select(attrs={"class": "form-select"}),
+            "language": forms.Select(attrs={"class": "form-select"}),
+            "country": forms.Select(attrs={"class": "form-select"}),
+            "is_active": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "is_failing": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "custom_selectors": forms.Textarea(attrs={"class": "form-control", "rows": 3}),
+            "fetch_config": _JsonTextarea(
+                attrs={
+                    "class": "form-control",
+                    "rows": 4,
+                    "placeholder": '{"wait_for_selector": ".content"}',
+                }
+            ),
+        }
+
+
+class SuggestionReviewForm(forms.Form):
+    """Superuser form used when approving or rejecting a submitted suggestion."""
+
+    review_notes = forms.CharField(
+        required=False,
+        label="Review notes (optional)",
+        widget=forms.Textarea(attrs={"class": "form-control", "rows": 3}),
+    )

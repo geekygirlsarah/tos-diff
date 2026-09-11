@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page_title }} — TosDiff{% endblock %}
+
+{% block content %}
+<div class="td-hero">
+  <h1 class="h3 mb-2">Manage TosDiff</h1>
+  <p class="mb-0">
+    Site administration tools. Changes to organizations, documents, and suggestions
+    take effect immediately.
+  </p>
+</div>
+
+<div class="row g-3">
+  <div class="col-sm-6 col-xl-3">
+    <div class="td-card p-4 text-center h-100">
+      <div class="h3 fw-bold mb-0" style="color: var(--td-primary-dark);">{{ organization_count }}</div>
+      <div class="small" style="color: var(--td-text-muted);">Organizations</div>
+      <a class="btn btn-sm td-btn-outline mt-3" href="{% url 'monitor:manage_organizations' %}">Manage</a>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="td-card p-4 text-center h-100">
+      <div class="h3 fw-bold mb-0" style="color: var(--td-primary-dark);">{{ document_count }}</div>
+      <div class="small" style="color: var(--td-text-muted);">Documents</div>
+      <a class="btn btn-sm td-btn-outline mt-3" href="{% url 'monitor:manage_documents' %}">Manage</a>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="td-card p-4 text-center h-100">
+      <div class="h3 fw-bold mb-0" style="color: var(--td-primary-dark);">{{ pending_suggestion_count }}</div>
+      <div class="small" style="color: var(--td-text-muted);">Pending suggestions</div>
+      <a class="btn btn-sm td-btn-outline mt-3" href="{% url 'monitor:manage_suggestions' %}">Review</a>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="td-card p-4 text-center h-100">
+      <div class="h3 fw-bold mb-0" style="color: var(--td-primary-dark);">Tags</div>
+      <div class="small" style="color: var(--td-text-muted);">Categorization labels</div>
+      <a class="btn btn-sm td-btn-outline mt-3" href="{% url 'monitor:manage_tags' %}">Manage</a>
+    </div>
+  </div>
+</div>
+
+<div class="td-card mt-4">
+  <div class="px-4 py-3 fw-semibold" style="border-bottom: 1px solid var(--td-border);">
+    Quick actions
+  </div>
+  <div class="p-4 d-flex flex-wrap gap-2">
+    <a class="btn td-btn-primary" href="{% url 'monitor:manage_organization_create' %}">Add an organization</a>
+    <a class="btn td-btn-outline" href="{% url 'monitor:manage_document_create' %}">Add a document</a>
+    <a class="btn td-btn-outline" href="{% url 'monitor:manage_tag_create' %}">Add a tag</a>
+    <a class="btn td-btn-outline" href="/admin/">Open Django admin</a>
+  </div>
+</div>
+{% endblock %}

@@ -4,7 +4,7 @@ from itertools import groupby
 from typing import TYPE_CHECKING
 
 from django.contrib.auth import get_user_model, login
-from django.contrib.auth.mixins import LoginRequiredMixin
+from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.contrib.auth.views import LogoutView  # noqa: F401 – re-exported for urls
 from django.db.models import Count, Q
 from django.http import Http404, HttpResponse
@@ -14,9 +14,17 @@ from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views import View
 from django.views.generic import DetailView, ListView, TemplateView
-from django.views.generic.edit import FormView
+from django.views.generic.edit import CreateView, FormView, UpdateView
 
-from .forms import CodeLoginForm, EmailLoginForm, SuggestionForm
+from .forms import (
+    CodeLoginForm,
+    DocumentForm,
+    EmailLoginForm,
+    OrganizationForm,
+    SuggestionForm,
+    SuggestionReviewForm,
+    TagForm,
+)
 from .models import (
     Document,
     DocumentSnapshot,
@@ -24,6 +32,8 @@ from .models import (
     LoginCode,
     Organization,
     OrganizationSubscription,
+    Suggestion,
+    Tag,
 )
 from .services import (
     LOGIN_CODE_TTL_MINUTES,
@@ -478,3 +488,239 @@ class OrganizationUnsubscribeView(LoginRequiredMixin, View):
             user=request.user, organization_id=kwargs["pk"]
         ).delete()
         return redirect("monitor:organizations")
+
+
+# ---------------------------------------------------------------------------
+# Superuser management views
+# ---------------------------------------------------------------------------
+
+
+class SuperuserRequiredMixin(UserPassesTestMixin):
+    """Restrict a view to logged-in superusers only."""
+
+    login_url = "/accounts/login/"
+
+    def test_func(self) -> bool:
+        user = self.request.user
+        return bool(user.is_authenticated and user.is_superuser)
+
+
+class ManageDashboardView(SuperuserRequiredMixin, TemplateView):
+    """Landing page for the superuser management area."""
+
+    template_name = "monitor/manage/dashboard.html"
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Manage TosDiff"
+        context["organization_count"] = Organization.objects.count()
+        context["document_count"] = Document.objects.count()
+        context["pending_suggestion_count"] = Suggestion.objects.filter(
+            status=Suggestion.Status.PENDING
+        ).count()
+        context["approved_document_count"] = _tracked_organizations().count()
+        return context
+
+
+class ManageOrganizationListView(SuperuserRequiredMixin, ListView):
+    """List all organizations with their document counts."""
+
+    model = Organization
+    template_name = "monitor/manage/organization_list.html"
+    context_object_name = "organizations"
+
+    def get_queryset(self):
+        return (
+            Organization.objects.annotate(document_count=Count("documents", distinct=True))
+            .select_related("parent")
+            .order_by("name")
+        )
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Manage organizations"
+        return context
+
+
+class ManageOrganizationCreateView(SuperuserRequiredMixin, CreateView):
+    model = Organization
+    form_class = OrganizationForm
+    template_name = "monitor/manage/organization_form.html"
+    success_url = reverse_lazy("monitor:manage_organizations")
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Add organization"
+        return context
+
+
+class ManageOrganizationUpdateView(SuperuserRequiredMixin, UpdateView):
+    model = Organization
+    form_class = OrganizationForm
+    template_name = "monitor/manage/organization_form.html"
+    success_url = reverse_lazy("monitor:manage_organizations")
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = f"Edit {self.object.name}"
+        return context
+
+
+class ManageDocumentListView(SuperuserRequiredMixin, ListView):
+    """List all documents, optionally filtered by organization and type."""
+
+    model = Document
+    template_name = "monitor/manage/document_list.html"
+    context_object_name = "documents"
+    paginate_by = 50
+
+    def get_queryset(self):
+        qs = Document.objects.select_related("organization", "language", "country").order_by(
+            "organization__name", "document_type", "url"
+        )
+        organization_id = self.request.GET.get("organization")
+        document_type = self.request.GET.get("type")
+        if organization_id:
+            qs = qs.filter(organization_id=organization_id)
+        if document_type:
+            qs = qs.filter(document_type=document_type)
+        return qs
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Manage documents"
+        context["organizations"] = Organization.objects.order_by("name")
+        context["document_types"] = Document.DocumentType.choices
+        context["selected_organization"] = self.request.GET.get("organization", "")
+        context["selected_doc_type"] = self.request.GET.get("type", "")
+        return context
+
+
+class ManageDocumentCreateView(SuperuserRequiredMixin, CreateView):
+    model = Document
+    form_class = DocumentForm
+    template_name = "monitor/manage/document_form.html"
+    success_url = reverse_lazy("monitor:manage_documents")
+
+    def get_initial(self) -> dict:
+        initial = super().get_initial()
+        organization_pk = self.kwargs.get("organization_pk")
+        if organization_pk:
+            initial["organization"] = organization_pk
+        return initial
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Add document"
+        return context
+
+
+class ManageDocumentUpdateView(SuperuserRequiredMixin, UpdateView):
+    model = Document
+    form_class = DocumentForm
+    template_name = "monitor/manage/document_form.html"
+    success_url = reverse_lazy("monitor:manage_documents")
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = f"Edit {self.object.display_name}"
+        return context
+
+
+class ManageSuggestionListView(SuperuserRequiredMixin, ListView):
+    """List user-submitted suggestions, defaulting to pending ones."""
+
+    model = Suggestion
+    template_name = "monitor/manage/suggestion_list.html"
+    context_object_name = "suggestions"
+    paginate_by = 50
+
+    def get_queryset(self):
+        qs = Suggestion.objects.all().order_by("-submitted_at", "-pk")
+        status = self.request.GET.get("status", Suggestion.Status.PENDING)
+        if status:
+            qs = qs.filter(status=status)
+        return qs
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Manage suggestions"
+        context["statuses"] = Suggestion.Status.choices
+        context["selected_status"] = self.request.GET.get("status", Suggestion.Status.PENDING)
+        return context
+
+
+class ManageSuggestionReviewView(SuperuserRequiredMixin, FormView):
+    """Approve (convert) or reject a submitted suggestion, per URL action."""
+
+    template_name = "monitor/manage/suggestion_review.html"
+    form_class = SuggestionReviewForm
+    action = ""  # "approve" or "reject", set per URL pattern
+
+    @property
+    def success_url(self):
+        return reverse_lazy("monitor:manage_suggestions")
+
+    def dispatch(self, request, *args, **kwargs):
+        self.suggestion = get_object_or_404(Suggestion, pk=kwargs["pk"])
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["suggestion"] = self.suggestion
+        context["action"] = self.action
+        context["page_title"] = (
+            f"Approve suggestion: {self.suggestion.organization_name}"
+            if self.action == "approve"
+            else f"Reject suggestion: {self.suggestion.organization_name}"
+        )
+        return context
+
+    def form_valid(self, form) -> HttpResponse:
+        if self.suggestion.status != Suggestion.Status.PENDING:
+            return super().form_valid(form)
+        if self.action == "approve":
+            self.suggestion.create_organization_and_document()
+            self.suggestion.status = Suggestion.Status.APPROVED
+        elif self.action == "reject":
+            self.suggestion.status = Suggestion.Status.REJECTED
+        self.suggestion.review_notes = form.cleaned_data["review_notes"]
+        self.suggestion.reviewed_at = timezone.now()
+        self.suggestion.save()
+        return super().form_valid(form)
+
+
+class ManageTagListView(SuperuserRequiredMixin, ListView):
+    model = Tag
+    template_name = "monitor/manage/tag_list.html"
+    context_object_name = "tags"
+    paginate_by = 50
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Manage tags"
+        return context
+
+
+class ManageTagCreateView(SuperuserRequiredMixin, CreateView):
+    model = Tag
+    form_class = TagForm
+    template_name = "monitor/manage/tag_form.html"
+    success_url = reverse_lazy("monitor:manage_tags")
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Add tag"
+        return context
+
+
+class ManageTagUpdateView(SuperuserRequiredMixin, UpdateView):
+    model = Tag
+    form_class = TagForm
+    template_name = "monitor/manage/tag_form.html"
+    success_url = reverse_lazy("monitor:manage_tags")
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Edit tag"
+        return context

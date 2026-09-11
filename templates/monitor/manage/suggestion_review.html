@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page_title }} — TosDiff{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-4">
+  <div>
+    <h1 class="h3 mb-0">{{ page_title }}</h1>
+    <p class="mb-0 small" style="color: var(--td-text-muted);">
+      <a href="{% url 'monitor:manage_dashboard' %}">Manage</a> /
+      <a href="{% url 'monitor:manage_suggestions' %}">Suggestions</a> / {{ page_title }}
+    </p>
+  </div>
+  <a class="btn td-btn-outline" href="{% url 'monitor:manage_suggestions' %}">Back to list</a>
+</div>
+
+<div class="row justify-content-center">
+  <div class="col-lg-9">
+    <div class="td-card p-4 p-md-5">
+      <div class="mb-4">
+        <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+          {% if action == "approve" %}
+          <span class="td-badge" style="background: #d1fae5; color: #065f46;">Being approved</span>
+          {% else %}
+          <span class="td-badge td-badge-error">Being rejected</span>
+          {% endif %}
+          <span class="td-badge" style="background: #fef3c7; color: #92400e;">{{ suggestion.get_status_display }}</span>
+          <span class="td-badge td-badge-other">{{ suggestion.get_document_type_display }}</span>
+        </div>
+        <h2 class="h4 mb-1">{{ suggestion.organization_name }}</h2>
+        <div class="small" style="color: var(--td-text-muted);">
+          Submitted {{ suggestion.submitted_at|date:"Y-m-d H:i" }}
+          {% if suggestion.contact_email %} &bull; {{ suggestion.contact_email }}{% endif %}
+        </div>
+      </div>
+
+      <dl class="row mb-0 small">
+        <dt class="col-sm-3">Website</dt>
+        <dd class="col-sm-9">
+          <a href="{{ suggestion.website_url }}" target="_blank" rel="noopener noreferrer">{{ suggestion.website_url }}</a>
+        </dd>
+        <dt class="col-sm-3">Document URL</dt>
+        <dd class="col-sm-9">
+          <a href="{{ suggestion.document_url }}" target="_blank" rel="noopener noreferrer">{{ suggestion.document_url }}</a>
+        </dd>
+        {% if suggestion.other_document_type %}
+        <dt class="col-sm-3">Other type</dt>
+        <dd class="col-sm-9">{{ suggestion.other_document_type }}</dd>
+        {% endif %}
+        {% if suggestion.notes %}
+        <dt class="col-sm-3">Notes</dt>
+        <dd class="col-sm-9">{{ suggestion.notes }}</dd>
+        {% endif %}
+      </dl>
+
+      <form method="post" novalidate class="mt-4">
+        {% csrf_token %}
+        {% if form.review_notes.errors %}
+        <div class="alert alert-danger" role="alert">Please correct the errors below.</div>
+        {% endif %}
+        <div class="mb-3">
+          <label class="form-label fw-semibold" for="{{ form.review_notes.id_for_label }}">
+            {{ form.review_notes.label }}
+          </label>
+          {{ form.review_notes }}
+          {% for error in form.review_notes.errors %}
+          <div class="invalid-feedback d-block">{{ error }}</div>
+          {% endfor %}
+        </div>
+        <div class="d-flex flex-wrap gap-2">
+          {% if action == "approve" %}
+          <button type="submit" class="btn td-btn-primary">Approve &amp; create</button>
+          {% else %}
+          <button type="submit" class="btn td-btn-outline" style="color:#991b1b;">Reject suggestion</button>
+          {% endif %}
+          <a href="{% url 'monitor:manage_suggestions' %}" class="btn td-btn-outline">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

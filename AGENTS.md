@@ -148,6 +148,23 @@ When implementing a new feature or fixing a bug:
 
 ---
 
+## Superuser Management Pages
+
+Superusers get a custom management area (in addition to Django admin) under `/manage/`:
+
+- `manage_dashboard` — counts + quick-action links to every management page
+- `manage_organizations`, `manage_organization_create`, `manage_organization_update` — CRUD for `Organization`
+- `manage_documents`, `manage_document_create`, `manage_document_update` — CRUD for `Document`; `manage_document_create_for_organization` (`/manage/organizations/<pk>/documents/add/`) preselects the organization
+- `manage_suggestions`, `manage_suggestion_approve`, `manage_suggestion_reject` — review queue; approving calls `Suggestion.create_organization_and_document()` and marks the suggestion approved
+- `manage_tags`, `manage_tag_create`, `manage_tag_update` — CRUD for `Tag`
+
+Conventions:
+- Every view subclasses `SuperuserRequiredMixin` in `monitor/views.py` (redirects anonymous users to login, returns 403 for non-superusers).
+- Forms live in `monitor/forms.py` (`OrganizationForm`, `DocumentForm`, `TagForm`, `SuggestionReviewForm`); they style fields with `form-control`/`form-select` and use the shared `_field.html` partial in templates.
+- Templates live in `templates/monitor/manage/`; they are responsive (`.table-responsive` wrappers, `flex-wrap`, `col-*` grids).
+- The navbar shows an "Admin" link only to superusers.
+- Keep URL names `manage_*` and prefix all routes with `/manage/`.
+
 ## UI & Templates
 
 - The site must be **responsive and mobile-first**: every page should work and look good from small phone screens up to wide desktop viewports. Use Bootstrap's responsive utilities (`row`/`col-*` grid, `flex-wrap`, `table-responsive`, `gap-*`) so content wraps and reflows instead of overflowing. All new pages must verify their layout at a small viewport width before being considered done.

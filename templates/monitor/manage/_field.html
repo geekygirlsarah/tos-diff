@@ -1,0 +1,24 @@
+{% comment %}
+Shared Bootstrap form field renderer for management forms.
+Usage: {% include "monitor/manage/_field.html" with field=form.name col_class="col-md-6" %}
+{% endcomment %}
+<div class="{% if col_class %}{{ col_class }}{% else %}col-12 col-md-6{% endif %}">
+  {% if field.field.widget.input_type == "checkbox" %}
+    <div class="form-check">
+      {{ field }}
+      <label class="form-check-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+      {% if field.help_text %}
+        <div class="form-text">{{ field.help_text }}</div>
+      {% endif %}
+    </div>
+  {% else %}
+    <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+    {{ field }}
+    {% if field.help_text %}
+      <div class="form-text">{{ field.help_text }}</div>
+    {% endif %}
+  {% endif %}
+  {% for error in field.errors %}
+    <div class="invalid-feedback d-block">{{ error }}</div>
+  {% endfor %}
+</div>

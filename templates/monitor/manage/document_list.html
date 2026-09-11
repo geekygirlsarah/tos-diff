@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page_title }} — TosDiff{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-4">
+  <div>
+    <h1 class="h3 mb-0">{{ page_title }}</h1>
+    <p class="mb-0 small" style="color: var(--td-text-muted);">
+      <a href="{% url 'monitor:manage_dashboard' %}">Manage</a> / Documents
+    </p>
+  </div>
+  <a class="btn td-btn-primary" href="{% url 'monitor:manage_document_create' %}">Add document</a>
+</div>
+
+<form method="get" class="row g-2 mb-3">
+  <div class="col-auto">
+    <label class="visually-hidden" for="id_organization">Organization</label>
+    <select name="organization" id="id_organization" class="form-select" onchange="this.form.submit()">
+      <option value="">All organizations</option>
+      {% for org in organizations %}
+      <option value="{{ org.pk }}" {% if selected_organization == org.pk|stringformat:"s" %}selected{% endif %}>
+        {{ org.name }}
+      </option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-auto">
+    <label class="visually-hidden" for="id_type">Document type</label>
+    <select name="type" id="id_type" class="form-select" onchange="this.form.submit()">
+      <option value="">All document types</option>
+      {% for value, label in document_types %}
+      <option value="{{ value }}" {% if selected_doc_type == value %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+</form>
+
+{% if documents %}
+<div class="td-card">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead>
+        <tr>
+          <th scope="col">Organization</th>
+          <th scope="col">Document</th>
+          <th scope="col">Type</th>
+          <th scope="col">Language</th>
+          <th scope="col">Status</th>
+          <th scope="col" class="text-end">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for doc in documents %}
+        <tr>
+          <td class="small">{{ doc.organization.name }}</td>
+          <td>
+            <a href="{% url 'monitor:manage_document_update' doc.pk %}" class="text-decoration-none"
+               style="color: var(--td-primary-dark);">{{ doc.display_name }}</a>
+            <div class="small" style="color: var(--td-text-muted);">
+              <a href="{{ doc.url }}" target="_blank" rel="noopener noreferrer">{{ doc.url }}</a>
+            </div>
+          </td>
+          <td><span class="td-badge td-badge-other">{{ doc.get_document_type_display }}</span></td>
+          <td class="small">{{ doc.language|default:"—" }}</td>
+          <td>
+            {% if not doc.is_active %}<span class="td-badge" style="background:var(--td-surface);color:var(--td-text-muted);">Inactive</span>{% endif %}
+            {% if doc.is_failing %}<span class="td-badge td-badge-error">Failing</span>{% endif %}
+          </td>
+          <td class="text-end">
+            <a class="btn btn-sm td-btn-outline" href="{% url 'monitor:document_detail' doc.pk %}">View</a>
+            <a class="btn btn-sm td-btn-outline" href="{% url 'monitor:manage_document_update' doc.pk %}">Edit</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% if page_obj.has_other_pages %}
+<nav aria-label="Document list pages" class="mt-3">
+  <ul class="pagination pagination-sm mb-0">
+    {% if page_obj.has_previous %}
+    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}{% if selected_organization %}&organization={{ selected_organization }}{% endif %}{% if selected_doc_type %}&type={{ selected_doc_type }}{% endif %}">Previous</a></li>
+    {% else %}
+    <li class="page-item disabled"><span class="page-link">Previous</span></li>
+    {% endif %}
+    <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
+    {% if page_obj.has_next %}
+    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}{% if selected_organization %}&organization={{ selected_organization }}{% endif %}{% if selected_doc_type %}&type={{ selected_doc_type }}{% endif %}">Next</a></li>
+    {% else %}
+    <li class="page-item disabled"><span class="page-link">Next</span></li>
+    {% endif %}
+  </ul>
+</nav>
+{% endif %}
+{% else %}
+<p style="color: var(--td-text-muted);">No documents match your filters.</p>
+{% endif %}
+{% endblock %}
