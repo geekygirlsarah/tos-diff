@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -80,9 +81,22 @@ WSGI_APPLICATION = 'tosdiff_new.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
+_database_url = os.environ.get('DATABASE_URL', '')
 _db_engine = os.environ.get('DB_ENGINE', 'sqlite3')
 
-if _db_engine == 'postgresql':
+if _database_url:
+    _db_parsed = urlparse(_database_url)
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': _db_parsed.path.lstrip('/'),
+            'USER': _db_parsed.username or '',
+            'PASSWORD': _db_parsed.password or '',
+            'HOST': _db_parsed.hostname or 'localhost',
+            'PORT': str(_db_parsed.port or 5432),
+        }
+    }
+elif _db_engine == 'postgresql':
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',
@@ -99,7 +113,7 @@ else:
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': BASE_DIR / 'db.sqlite3',
         }
-}
+    }
 
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 

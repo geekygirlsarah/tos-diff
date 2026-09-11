@@ -1,0 +1,63 @@
+# Render Blueprint — deploy with: https://dashboard.render.com/new?type=blueprint
+#
+# Creates three resources:
+#   1. Web service  (Django + Gunicorn)
+#   2. PostgreSQL   (managed database)
+#   3. Cron Job     (daily document fetch at 02:00 UTC)
+#
+# After the first deploy, create a superuser via Render Shell:
+#   python manage.py createsuperuser
+
+services:
+  - type: web
+    name: tosdiff
+    runtime: image
+    image:
+      url: https://github.com/geekygirlsarah/TosDiff-New.git  # ← replace with your repo
+    plan: starter
+    healthCheckPath: /
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_ALLOWED_HOSTS
+        value: tosdiff.onrender.com  # ← update after deploy
+      - key: DB_ENGINE
+        value: postgresql
+      - key: DATABASE_URL
+        fromDatabase:
+          name: tosdiff-db
+          property: connectionString
+      - key: GUNICORN_WORKERS
+        value: "2"
+      - key: GUNICORN_TIMEOUT
+        value: "120"
+
+databases:
+  - name: tosdiff-db
+    plan: starter
+    databaseName: tosdiff
+    user: tosdiff
+
+cronJobs:
+  - name: fetch-documents
+    runtime: image
+    image:
+      url: https://github.com/<your-org>/TosDiff-New.git  # ← same repo
+    plan: starter
+    schedule: "0 2 * * *"  # 02:00 UTC daily
+    startCommand: manage fetch_documents
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        value: "cron-placeholder-not-used-by-fetch"
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DB_ENGINE
+        value: postgresql
+      - key: DATABASE_URL
+        fromDatabase:
+          name: tosdiff-db
+          property: connectionString
+      - key: DJANGO_ALLOWED_HOSTS
+        value: "*"
