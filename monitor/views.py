@@ -1,10 +1,12 @@
 import difflib
 import secrets
+from itertools import groupby
 from typing import TYPE_CHECKING
 
 from django.contrib.auth import get_user_model, login
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.auth.views import LogoutView  # noqa: F401 – re-exported for urls
+from django.db.models import Count, Q
 from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse_lazy
@@ -37,10 +39,21 @@ if TYPE_CHECKING:
 VALID_DAYS = (3, 7, 14, 30)
 
 
+def _tracked_organizations():
+    """Top-level organizations with at least one document (directly or via a subsidiary)."""
+    return (
+        Organization.objects.filter(parent__isnull=True)
+        .annotate(
+            own_doc_count=Count("documents", distinct=True),
+            sub_doc_count=Count("subsidiaries__documents", distinct=True),
+        )
+        .filter(Q(own_doc_count__gt=0) | Q(sub_doc_count__gt=0))
+    )
+
+
 class RecentChangesView(ListView):
     template_name = "monitor/home.html"
-    context_object_name = "snapshots"
-    paginate_by = 20
+    context_object_name = "day_groups"
 
     def _get_days(self) -> int:
         try:
@@ -62,11 +75,28 @@ class RecentChangesView(ListView):
         )
 
     def get_queryset(self):
-        qs = self._base_queryset().order_by("-captured_at")
+        qs = self._base_queryset()
         doc_type = self._get_doc_type()
         if doc_type:
             qs = qs.filter(document__document_type=doc_type)
-        return qs
+        # Order by day (newest first), then organization (A–Z), then most recent first.
+        return qs.order_by("-captured_at__date", "document__organization__name", "-captured_at")
+
+    def _group_snapshots(self, snapshots):
+        """Return [{date, organizations: [{organization, snapshots}]}] groups."""
+        day_groups = []
+        for day, day_snaps in groupby(snapshots, key=lambda s: s.captured_at.date()):
+            organizations = []
+            for _, org_snaps in groupby(day_snaps, key=lambda s: s.document.organization_id):
+                org_snaps = list(org_snaps)
+                organizations.append(
+                    {
+                        "organization": org_snaps[0].document.organization,
+                        "snapshots": org_snaps,
+                    }
+                )
+            day_groups.append({"date": day, "organizations": organizations})
+        return day_groups
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -76,6 +106,11 @@ class RecentChangesView(ListView):
         context["valid_days"] = VALID_DAYS
         context["doc_type"] = doc_type
         context["page_title"] = f"Recent Changes (last {days} days)"
+        context["total_organizations"] = _tracked_organizations().count()
+        context["total_documents"] = Document.objects.count()
+
+        # Group the (already ordered) snapshots by day, then organization.
+        context["day_groups"] = self._group_snapshots(list(context["day_groups"]))
 
         # Distinct document types present in the current time-window
         type_values = (
@@ -163,15 +198,8 @@ class OrganizationsView(ListView):
     context_object_name = "organizations"
 
     def get_queryset(self):
-        from django.db.models import Count, Q
-
         return (
-            Organization.objects.filter(parent__isnull=True)
-            .annotate(
-                own_doc_count=Count("documents", distinct=True),
-                sub_doc_count=Count("subsidiaries__documents", distinct=True),
-            )
-            .filter(Q(own_doc_count__gt=0) | Q(sub_doc_count__gt=0))
+            _tracked_organizations()
             .prefetch_related(
                 "documents",
                 "subsidiaries",
@@ -183,6 +211,8 @@ class OrganizationsView(ListView):
     def get_context_data(self, **kwargs) -> dict:
         context = super().get_context_data(**kwargs)
         context["page_title"] = "Organizations"
+        context["total_organizations"] = len(context["organizations"])
+        context["total_documents"] = Document.objects.count()
 
         user = self.request.user
         if user.is_authenticated:

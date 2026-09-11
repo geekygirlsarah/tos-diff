@@ -123,6 +123,21 @@ class OrganizationModelTest(TestCase):
         org = Organization(name="Acme")
         self.assertEqual(str(org), "Acme")
 
+    def test_favicon_url_uses_website_domain(self):
+        org = Organization.objects.create(name="Acme", website_url="https://www.acme.com/some/path")
+        self.assertEqual(
+            org.favicon_url,
+            "https://icons.duckduckgo.com/ip3/www.acme.com.ico",
+        )
+
+    def test_favicon_url_strips_port_and_scheme(self):
+        org = Organization.objects.create(name="Acme", website_url="http://acme.com:8080/")
+        self.assertEqual(org.favicon_url, "https://icons.duckduckgo.com/ip3/acme.com.ico")
+
+    def test_favicon_url_empty_when_no_hostname(self):
+        org = Organization(name="Acme", website_url="not a url")
+        self.assertEqual(org.favicon_url, "")
+
 
 class OrganizationParentTest(TestCase):
     def test_parent_can_be_set(self):
@@ -1051,6 +1066,96 @@ class RecentChangesViewTest(TestCase):
         self.assertContains(response, "No document changes detected")
 
 
+class HomePageGroupingTest(TestCase):
+    """Tests for day/org grouping and ordering on the home page."""
+
+    def setUp(self):
+        self.hbo = Organization.objects.create(name="HBO", website_url="https://hbo.com")
+        self.tos_doc = Document.objects.create(
+            organization=self.hbo,
+            url="https://hbo.com/tos",
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+        )
+        self.privacy_doc = Document.objects.create(
+            organization=self.hbo,
+            url="https://hbo.com/privacy",
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+        )
+
+    def _snapshot(self, document, text="content"):
+        return DocumentSnapshot.objects.create(
+            document=document,
+            cleaned_text=text,
+            text_hash=compute_hash(text),
+        )
+
+    def test_context_groups_documents_by_organization(self):
+        self._snapshot(self.tos_doc)
+        self._snapshot(self.privacy_doc)
+        response = self.client.get(reverse("monitor:home"))
+        org_groups = response.context["day_groups"][0]["organizations"]
+        self.assertEqual(org_groups[0]["organization"].name, "HBO")
+        self.assertEqual(len(org_groups[0]["snapshots"]), 2)
+
+    def test_organizations_sorted_alphabetically_within_day(self):
+        apple = Organization.objects.create(name="Apple", website_url="https://apple.com")
+        netflix = Organization.objects.create(name="Netflix", website_url="https://netflix.com")
+        apple_doc = Document.objects.create(organization=apple, url="https://apple.com/privacy")
+        netflix_doc = Document.objects.create(organization=netflix, url="https://netflix.com/tos")
+        self._snapshot(apple_doc)
+        self._snapshot(netflix_doc)
+        self._snapshot(self.tos_doc)
+        response = self.client.get(reverse("monitor:home"))
+        org_names = [
+            og["organization"].name for og in response.context["day_groups"][0]["organizations"]
+        ]
+        self.assertEqual(org_names, ["Apple", "HBO", "Netflix"])
+
+    def test_snapshots_split_into_separate_days(self):
+        snap = self._snapshot(self.tos_doc)
+        DocumentSnapshot.objects.filter(pk=snap.pk).update(
+            captured_at=timezone.now() - timezone.timedelta(days=1)
+        )
+        self._snapshot(self.privacy_doc)
+        response = self.client.get(reverse("monitor:home"))
+        day_groups = response.context["day_groups"]
+        self.assertEqual(len(day_groups), 2)
+
+    def test_org_appears_once_per_day(self):
+        self._snapshot(self.tos_doc)
+        self._snapshot(self.privacy_doc)
+        response = self.client.get(reverse("monitor:home"))
+        org_groups = response.context["day_groups"][0]["organizations"]
+        self.assertEqual(len(org_groups), 1)
+
+    def test_homepage_renders_organization_group_heading(self):
+        self._snapshot(self.tos_doc)
+        self._snapshot(self.privacy_doc)
+        response = self.client.get(reverse("monitor:home"))
+        self.assertContains(response, "HBO")
+        self.assertContains(response, "<h2")  # day heading rendered
+
+    def test_homepage_does_not_show_time(self):
+        self._snapshot(self.tos_doc)
+        response = self.client.get(reverse("monitor:home"))
+        self.assertNotContains(response, "UTC")
+
+    def test_homepage_context_has_totals(self):
+        response = self.client.get(reverse("monitor:home"))
+        self.assertEqual(response.context["total_organizations"], 1)
+        self.assertEqual(response.context["total_documents"], 2)
+
+    def test_homepage_hero_shows_counts(self):
+        response = self.client.get(reverse("monitor:home"))
+        self.assertContains(response, "Organizations tracked")
+        self.assertContains(response, "Documents monitored")
+
+    def test_homepage_renders_org_favicon(self):
+        self._snapshot(self.tos_doc)
+        response = self.client.get(reverse("monitor:home"))
+        self.assertContains(response, "icons.duckduckgo.com/ip3/hbo.com.ico")
+
+
 class OrganizationsViewTest(TestCase):
     def setUp(self):
         self.parent = Organization.objects.create(name="Meta", website_url="https://meta.com")
@@ -1095,6 +1200,24 @@ class OrganizationsViewTest(TestCase):
         Organization.objects.all().delete()
         response = self.client.get(reverse("monitor:organizations"))
         self.assertContains(response, "No organizations have been added yet")
+
+    def test_context_includes_hero_stats(self):
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertEqual(response.context["total_organizations"], 1)
+        self.assertEqual(response.context["total_documents"], 2)
+
+    def test_hero_shows_organization_and_document_counts(self):
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertContains(response, "Organizations tracked")
+        self.assertContains(response, "Documents monitored")
+
+    def test_org_card_shows_document_count(self):
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertContains(response, "2 documents")
+
+    def test_shows_org_favicon(self):
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertContains(response, "icons.duckduckgo.com/ip3/meta.com.ico")
 
 
 class AboutViewTest(TestCase):

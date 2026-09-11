@@ -1,3 +1,5 @@
+from urllib.parse import urlparse
+
 from django.conf import settings
 from django.db import models
 from django.utils.text import slugify
@@ -97,6 +99,14 @@ class Organization(models.Model):
         if not self.slug:
             self.slug = slugify(self.name)
         super().save(*args, **kwargs)
+
+    @property
+    def favicon_url(self) -> str:
+        """DuckDuckGo favicon service URL for this organization's website domain."""
+        hostname = urlparse(self.website_url).hostname or ""
+        if not hostname:
+            return ""
+        return f"https://icons.duckduckgo.com/ip3/{hostname}.ico"
 
 
 class Document(models.Model):

@@ -151,8 +151,10 @@ When implementing a new feature or fixing a bug:
 ## UI & Templates
 
 - The site must be **responsive and mobile-first**: every page should work and look good from small phone screens up to wide desktop viewports. Use Bootstrap's responsive utilities (`row`/`col-*` grid, `flex-wrap`, `table-responsive`, `gap-*`) so content wraps and reflows instead of overflowing. All new pages must verify their layout at a small viewport width before being considered done.
-- The homepage (`monitor/home.html`) supports two query params: `days` (3, 7, 14, 30) and `type` (a valid `Document.DocumentType` value). Invalid values fall back to defaults. The distinct types present in the current time-window are passed as `document_types` in the view context (`monitor/views.py:RecentChangesView`).
-- Shared UI styling lives in `templates/base.html` as CSS custom properties under the `--td-*` variables (blues/greens palette). Custom classes are prefixed `td-` (e.g. `td-card`, `td-chip`, `td-badge`).
+- The homepage (`monitor/home.html`) supports two query params: `days` (3, 7, 14, 30) and `type` (a valid `Document.DocumentType` value). Invalid values fall back to defaults. The distinct types present in the current time-window are passed as `document_types` in the view context. Snapshots are grouped into `day_groups` (day → organization → snapshots), ordered by day (newest first), then organization name (A–Z); `RecentChangesView` in `monitor/views.py` builds this structure and shows dates only (no timestamps). Its hero shows `total_organizations` / `total_documents` stats in a two-column layout.
+- The organizations page (`monitor/organizations.html`) shows a hero banner with `total_organizations` / `total_documents` stats plus per-organization cards; `OrganizationsView` provides those counts in context. Both pages share the `_tracked_organizations()` helper in `monitor/views.py` for the org count.
+- Organization favicons render next to org names using `Organization.favicon_url` (DuckDuckGo's icon service) with lazy loading and a hidden fallback on error.
+- Shared UI styling lives in `templates/base.html` as CSS custom properties under the `--td-*` variables (blues/greens palette). Custom classes are prefixed `td-` (e.g. `td-card`, `td-chip`, `td-badge`, `td-card-row`).
 
 ---
 

@@ -4,11 +4,27 @@
 
 {% block content %}
 <div class="td-hero">
-  <h1 class="h3 mb-2">Track legal document changes</h1>
-  <p class="mb-0">
-    TosDiff monitors Terms of Service, Privacy Policies, and other legal documents
-    across the web. When content changes, you can see exactly what was added or removed.
-  </p>
+  <div class="row gy-4 align-items-center">
+    <div class="col-lg-7">
+      <h1 class="h3 mb-2">Track legal document changes</h1>
+      <p class="mb-0">
+        TosDiff monitors Terms of Service, Privacy Policies, and other legal documents
+        across the web. When content changes, you can see exactly what was added or removed.
+      </p>
+    </div>
+    <div class="col-lg-5">
+      <div class="d-flex flex-wrap gap-4">
+        <div>
+          <div class="h4 fw-bold mb-0" style="color: var(--td-primary-dark);">{{ total_organizations }}</div>
+          <div class="small" style="color: var(--td-text-muted);">Organizations tracked</div>
+        </div>
+        <div>
+          <div class="h4 fw-bold mb-0" style="color: var(--td-primary-dark);">{{ total_documents }}</div>
+          <div class="small" style="color: var(--td-text-muted);">Documents monitored</div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
@@ -42,63 +58,57 @@
 </div>
 {% endif %}
 
-{% if snapshots %}
-  <div class="d-flex flex-column gap-3">
-    {% for snapshot in snapshots %}
-    <a href="{% url 'monitor:document_detail' snapshot.document.pk %}"
-       class="td-card td-card-link p-3">
-      <div class="d-flex justify-content-between align-items-start gap-3">
-        <div class="min-width-0">
-          <div class="d-flex align-items-center gap-2 flex-wrap mb-1">
-            <span class="fw-semibold">{{ snapshot.document.organization.name }}</span>
-            <span style="color: var(--td-text-muted);">&mdash;</span>
-            <span>{{ snapshot.document.display_name }}</span>
-            {% if snapshot.document.document_type == "tos" %}
-              <span class="td-badge td-badge-tos">Terms of Service</span>
-            {% elif snapshot.document.document_type == "privacy" %}
-              <span class="td-badge td-badge-privacy">Privacy Policy</span>
-            {% elif snapshot.document.document_type == "cookie" %}
-              <span class="td-badge td-badge-cookie">Cookie Policy</span>
-            {% elif snapshot.document.document_type == "other" %}
-              <span class="td-badge td-badge-other">{{ snapshot.document.other_document_type|default:"Other" }}</span>
-            {% else %}
-              <span class="td-badge td-badge-other">{{ snapshot.document.get_document_type_display }}</span>
-            {% endif %}
-            {% if snapshot.document.is_failing or snapshot.document.organization.is_failing %}
-              <span class="td-badge td-badge-error">Error</span>
-            {% endif %}
+{% if day_groups %}
+  <div class="d-flex flex-column gap-4">
+    {% for day in day_groups %}
+      <section aria-label="Changes from {{ day.date|date:'F j, Y' }}">
+        <h2 class="h5 fw-bold mb-2" style="color: var(--td-primary-dark);">
+          {{ day.date|date:"F j, Y" }}
+        </h2>
+        <div class="d-flex flex-column gap-3">
+          {% for org_group in day.organizations %}
+          <div class="td-card">
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 px-4 py-3"
+                 style="border-bottom: 1px solid var(--td-border);">
+              <div class="d-flex flex-wrap align-items-center gap-2">
+                {% if org_group.organization.favicon_url %}
+                <img src="{{ org_group.organization.favicon_url }}" alt=""
+                     class="td-favicon" width="16" height="16" loading="lazy"
+                     referrerpolicy="no-referrer"
+                     onerror="this.style.display='none'">
+                {% endif %}
+                <span class="fw-semibold">{{ org_group.organization.name }}</span>
+                {% if org_group.organization.is_failing %}
+                  <span class="td-badge td-badge-error">Error</span>
+                {% endif %}
+              </div>
+            </div>
+            {% for snapshot in org_group.snapshots %}
+            <a href="{% url 'monitor:document_detail' snapshot.document.pk %}"
+               class="td-card-row">
+              <span>{{ snapshot.document.display_name }}</span>
+              {% if snapshot.document.document_type == "tos" %}
+                <span class="td-badge td-badge-tos">Terms of Service</span>
+              {% elif snapshot.document.document_type == "privacy" %}
+                <span class="td-badge td-badge-privacy">Privacy Policy</span>
+              {% elif snapshot.document.document_type == "cookie" %}
+                <span class="td-badge td-badge-cookie">Cookie Policy</span>
+              {% elif snapshot.document.document_type == "other" %}
+                <span class="td-badge td-badge-other">{{ snapshot.document.other_document_type|default:"Other" }}</span>
+              {% else %}
+                <span class="td-badge td-badge-other">{{ snapshot.document.get_document_type_display }}</span>
+              {% endif %}
+              {% if snapshot.document.is_failing %}
+                <span class="td-badge td-badge-error">Error</span>
+              {% endif %}
+            </a>
+            {% endfor %}
           </div>
+          {% endfor %}
         </div>
-        <time class="small text-nowrap flex-shrink-0"
-              style="color: var(--td-text-muted);"
-              datetime="{{ snapshot.captured_at|date:'c' }}"
-              data-utc="{{ snapshot.captured_at|date:'c' }}">
-          {{ snapshot.captured_at|date:"Y-m-d H:i" }} UTC
-        </time>
-      </div>
-    </a>
+      </section>
     {% endfor %}
   </div>
-
-  {% if is_paginated %}
-  <nav aria-label="Page navigation" class="mt-4">
-    <ul class="pagination justify-content-center">
-      {% if page_obj.has_previous %}
-      <li class="page-item">
-        <a class="page-link" href="?page={{ page_obj.previous_page_number }}&amp;days={{ days }}{% if doc_type %}&amp;type={{ doc_type }}{% endif %}">Previous</a>
-      </li>
-      {% endif %}
-      <li class="page-item disabled">
-        <span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
-      </li>
-      {% if page_obj.has_next %}
-      <li class="page-item">
-        <a class="page-link" href="?page={{ page_obj.next_page_number }}&amp;days={{ days }}{% if doc_type %}&amp;type={{ doc_type }}{% endif %}">Next</a>
-      </li>
-      {% endif %}
-    </ul>
-  </nav>
-  {% endif %}
 
 {% else %}
   <p style="color: var(--td-text-muted);">No document changes detected in the last {{ days }} days.</p>

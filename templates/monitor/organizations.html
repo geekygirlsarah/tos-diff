@@ -3,88 +3,79 @@
 {% block title %}Organizations — TosDiff{% endblock %}
 
 {% block content %}
-<h1 class="h3 mb-4">{{ page_title }}</h1>
-
-{% if organizations %}
-  {% for org in organizations %}
-  <div class="td-card mb-4">
-    <div class="px-4 py-3 d-flex justify-content-between align-items-center"
-         style="border-bottom: 1px solid var(--td-border);">
-      <h2 class="h5 mb-0">
-        <a href="{{ org.website_url }}" target="_blank" rel="noopener noreferrer"
-           class="text-decoration-none" style="color: var(--td-primary-dark);">{{ org.name }}</a>
-      </h2>
-      <div class="d-flex align-items-center gap-2">
-        {% if org.category %}
-        <span class="td-badge" style="background: var(--td-accent-light); color: var(--td-accent);">
-          {{ org.get_category_display }}
-        </span>
-        {% endif %}
-        {% if user.is_authenticated %}
-          {% if org.pk in subscribed_org_ids %}
-          <form method="post" action="{% url 'monitor:organization_unsubscribe' org.pk %}">
-            {% csrf_token %}
-            <button type="submit" class="btn btn-sm td-btn-outline">
-              Following
-            </button>
-          </form>
-          {% else %}
-          <form method="post" action="{% url 'monitor:organization_subscribe' org.pk %}">
-            {% csrf_token %}
-            <button type="submit" class="btn btn-sm td-btn-primary">
-              Subscribe
-            </button>
-          </form>
-          {% endif %}
-        {% endif %}
-      </div>
+<div class="td-hero">
+  <h1 class="h3 mb-2">Organizations we track</h1>
+  <p class="mb-0">
+    Browse the legal documents TosDiff monitors for each organization.
+    {% if user.is_authenticated %}
+      Follow one to get notified whenever its documents change.
+    {% endif %}
+  </p>
+  <div class="d-flex flex-wrap gap-4 mt-4">
+    <div>
+      <div class="h4 fw-bold mb-0" style="color: var(--td-primary-dark);">{{ total_organizations }}</div>
+      <div class="small" style="color: var(--td-text-muted);">Organizations tracked</div>
     </div>
     <div>
-      {% if org.documents.all %}
-      {% for doc in org.documents.all %}
-      <a href="{% url 'monitor:document_detail' doc.pk %}"
-         class="d-flex align-items-center gap-2 px-4 py-2 text-decoration-none"
-         style="border-bottom: 1px solid var(--td-border); color: var(--td-text);">
-        <span>{{ doc.display_name }}</span>
-        {% if doc.document_type == "tos" %}
-          <span class="td-badge td-badge-tos">ToS</span>
-        {% elif doc.document_type == "privacy" %}
-          <span class="td-badge td-badge-privacy">Privacy</span>
-        {% elif doc.document_type == "cookie" %}
-          <span class="td-badge td-badge-cookie">Cookie</span>
-        {% elif doc.document_type == "other" %}
-          <span class="td-badge td-badge-other">{{ doc.other_document_type|default:"Other" }}</span>
-        {% else %}
-          <span class="td-badge td-badge-other">{{ doc.get_document_type_display }}</span>
-        {% endif %}
-        {% if doc.is_failing or org.is_failing %}
-          <span class="td-badge td-badge-error">Error</span>
-        {% endif %}
-        {% if doc.language %}
-          <span class="td-badge" style="background: var(--td-surface); color: var(--td-text-muted);">{{ doc.language.name }}</span>
-        {% endif %}
-        {% if doc.country %}
-          <span class="td-badge" style="background: var(--td-surface); color: var(--td-text-muted);">{{ doc.country.name }}</span>
-        {% endif %}
-      </a>
-      {% endfor %}
-      {% else %}
-      <p class="px-4 py-3 mb-0" style="color: var(--td-text-muted);">No documents tracked yet.</p>
-      {% endif %}
+      <div class="h4 fw-bold mb-0" style="color: var(--td-primary-dark);">{{ total_documents }}</div>
+      <div class="small" style="color: var(--td-text-muted);">Documents monitored</div>
+    </div>
+  </div>
+</div>
 
-      {% for subsidiary in org.subsidiaries.all %}{% if subsidiary.documents.all %}
-      <div style="border-top: 1px solid var(--td-border); background: var(--td-surface);">
-        <div class="px-4 pt-3 pb-2">
-          <h3 class="h6 mb-2" style="color: var(--td-text-muted);">
-            <a href="{{ subsidiary.website_url }}" target="_blank" rel="noopener noreferrer"
-               class="text-decoration-none" style="color: var(--td-text-muted);">{{ subsidiary.name }}</a>
-            <small class="fw-normal">(subsidiary)</small>
-          </h3>
+{% if organizations %}
+  <div class="d-flex flex-column gap-4">
+    {% for org in organizations %}
+    <article class="td-card" aria-label="{{ org.name }}">
+      <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 px-4 py-3"
+           style="border-bottom: 1px solid var(--td-border);">
+        <div class="d-flex flex-wrap align-items-center gap-2 min-width-0">
+          {% if org.favicon_url %}
+          <img src="{{ org.favicon_url }}" alt=""
+               class="td-favicon" width="16" height="16" loading="lazy"
+               referrerpolicy="no-referrer"
+               onerror="this.style.display='none'">
+          {% endif %}
+          <h2 class="h5 mb-0">
+            <a href="{{ org.website_url }}" target="_blank" rel="noopener noreferrer"
+               class="text-decoration-none" style="color: var(--td-primary-dark);">{{ org.name }}</a>
+          </h2>
+          {% if org.category %}
+          <span class="td-badge" style="background: var(--td-accent-light); color: var(--td-accent);">
+            {{ org.get_category_display }}
+          </span>
+          {% endif %}
+          {% if org.is_failing %}
+          <span class="td-badge td-badge-error">Error</span>
+          {% endif %}
         </div>
-        {% for doc in subsidiary.documents.all %}
-        <a href="{% url 'monitor:document_detail' doc.pk %}"
-           class="d-flex align-items-center gap-2 px-4 py-2 ps-5 text-decoration-none"
-           style="border-bottom: 1px solid var(--td-border); color: var(--td-text);">
+        <div class="d-flex align-items-center gap-2">
+          <span class="small" style="color: var(--td-text-muted);">
+            {{ org.own_doc_count|add:org.sub_doc_count }} document{{ org.own_doc_count|add:org.sub_doc_count|pluralize }}
+          </span>
+          {% if user.is_authenticated %}
+            {% if org.pk in subscribed_org_ids %}
+            <form method="post" action="{% url 'monitor:organization_unsubscribe' org.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm td-btn-outline">
+                Following
+              </button>
+            </form>
+            {% else %}
+            <form method="post" action="{% url 'monitor:organization_subscribe' org.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm td-btn-primary">
+                Subscribe
+              </button>
+            </form>
+            {% endif %}
+          {% endif %}
+        </div>
+      </div>
+      <div>
+        {% if org.documents.all %}
+        {% for doc in org.documents.all %}
+        <a href="{% url 'monitor:document_detail' doc.pk %}" class="td-card-row">
           <span>{{ doc.display_name }}</span>
           {% if doc.document_type == "tos" %}
             <span class="td-badge td-badge-tos">ToS</span>
@@ -97,7 +88,7 @@
           {% else %}
             <span class="td-badge td-badge-other">{{ doc.get_document_type_display }}</span>
           {% endif %}
-          {% if doc.is_failing or subsidiary.is_failing %}
+          {% if doc.is_failing %}
             <span class="td-badge td-badge-error">Error</span>
           {% endif %}
           {% if doc.language %}
@@ -108,11 +99,56 @@
           {% endif %}
         </a>
         {% endfor %}
+        {% else %}
+        <p class="px-4 py-3 mb-0" style="color: var(--td-text-muted);">No documents tracked yet.</p>
+        {% endif %}
+
+        {% for subsidiary in org.subsidiaries.all %}{% if subsidiary.documents.all %}
+        <div style="background: var(--td-surface);">
+          <div class="px-4 pt-3 pb-1">
+            <h3 class="h6 mb-2" style="color: var(--td-text-muted);">
+              {% if subsidiary.favicon_url %}
+              <img src="{{ subsidiary.favicon_url }}" alt=""
+                   class="td-favicon me-1" width="14" height="14" loading="lazy"
+                   referrerpolicy="no-referrer"
+                   onerror="this.style.display='none'">
+              {% endif %}
+              <a href="{{ subsidiary.website_url }}" target="_blank" rel="noopener noreferrer"
+                 class="text-decoration-none" style="color: var(--td-text-muted);">{{ subsidiary.name }}</a>
+              <small class="fw-normal">(subsidiary)</small>
+            </h3>
+          </div>
+          {% for doc in subsidiary.documents.all %}
+          <a href="{% url 'monitor:document_detail' doc.pk %}" class="td-card-row ps-5">
+            <span>{{ doc.display_name }}</span>
+            {% if doc.document_type == "tos" %}
+              <span class="td-badge td-badge-tos">ToS</span>
+            {% elif doc.document_type == "privacy" %}
+              <span class="td-badge td-badge-privacy">Privacy</span>
+            {% elif doc.document_type == "cookie" %}
+              <span class="td-badge td-badge-cookie">Cookie</span>
+            {% elif doc.document_type == "other" %}
+              <span class="td-badge td-badge-other">{{ doc.other_document_type|default:"Other" }}</span>
+            {% else %}
+              <span class="td-badge td-badge-other">{{ doc.get_document_type_display }}</span>
+            {% endif %}
+            {% if doc.is_failing %}
+              <span class="td-badge td-badge-error">Error</span>
+            {% endif %}
+            {% if doc.language %}
+              <span class="td-badge" style="background: var(--td-surface); color: var(--td-text-muted);">{{ doc.language.name }}</span>
+            {% endif %}
+            {% if doc.country %}
+              <span class="td-badge" style="background: var(--td-surface); color: var(--td-text-muted);">{{ doc.country.name }}</span>
+            {% endif %}
+          </a>
+          {% endfor %}
+        </div>
+        {% endif %}{% endfor %}
       </div>
-      {% endif %}{% endfor %}
-    </div>
+    </article>
+    {% endfor %}
   </div>
-  {% endfor %}
 {% else %}
   <p style="color: var(--td-text-muted);">No organizations have been added yet.</p>
 {% endif %}
