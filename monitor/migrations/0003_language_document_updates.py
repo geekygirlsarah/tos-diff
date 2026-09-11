@@ -1,5 +1,5 @@
-from django.db import migrations, models
 import django.db.models.deletion
+from django.db import migrations, models
 
 
 def create_english_and_assign(apps, schema_editor):
@@ -10,7 +10,6 @@ def create_english_and_assign(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("monitor", "0002_document_custom_selectors"),
     ]
@@ -20,9 +19,24 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="Language",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
-                ("name", models.CharField(help_text='Display name, e.g. "English", "Français"', max_length=100)),
-                ("code", models.CharField(help_text='ISO 639-1 code, e.g. "en", "fr"', max_length=10, unique=True)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                    ),
+                ),
+                (
+                    "name",
+                    models.CharField(
+                        help_text='Display name, e.g. "English", "Français"', max_length=100
+                    ),
+                ),
+                (
+                    "code",
+                    models.CharField(
+                        help_text='ISO 639-1 code, e.g. "en", "fr"', max_length=10, unique=True
+                    ),
+                ),
             ],
             options={
                 "ordering": ["name"],

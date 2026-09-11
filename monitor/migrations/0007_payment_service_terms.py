@@ -4,15 +4,33 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('monitor', '0006_country_model'),
+        ("monitor", "0006_country_model"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='document',
-            name='document_type',
-            field=models.CharField(choices=[('tos', 'Terms of Service'), ('privacy', 'Privacy Policy'), ('cookie', 'Cookie Policy'), ('refund', 'Refund Policy'), ('childrens_privacy', "Children's Privacy Policy"), ('subscription', 'Subscription Policy'), ('service_agreement', 'Service Agreement'), ('service_fees', 'Service Fees'), ('user_agreement', 'User Agreement'), ('conduct', 'Code of Conduct / Community Standards'), ('acceptable_use', 'Acceptable Use Policy'), ('dmca', 'DMCA / Copyright Policy'), ('payment_service', 'Payment Service Terms'), ('other', 'Other')], default='tos', max_length=20),
+            model_name="document",
+            name="document_type",
+            field=models.CharField(
+                choices=[
+                    ("tos", "Terms of Service"),
+                    ("privacy", "Privacy Policy"),
+                    ("cookie", "Cookie Policy"),
+                    ("refund", "Refund Policy"),
+                    ("childrens_privacy", "Children's Privacy Policy"),
+                    ("subscription", "Subscription Policy"),
+                    ("service_agreement", "Service Agreement"),
+                    ("service_fees", "Service Fees"),
+                    ("user_agreement", "User Agreement"),
+                    ("conduct", "Code of Conduct / Community Standards"),
+                    ("acceptable_use", "Acceptable Use Policy"),
+                    ("dmca", "DMCA / Copyright Policy"),
+                    ("payment_service", "Payment Service Terms"),
+                    ("other", "Other"),
+                ],
+                default="tos",
+                max_length=20,
+            ),
         ),
     ]

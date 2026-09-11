@@ -10,6 +10,7 @@ Usage:
 """
 
 import random
+
 from django.core.management.base import BaseCommand, CommandError
 
 from monitor.models import Document
@@ -94,14 +95,20 @@ class Command(BaseCommand):
 
     def _dispatch_celery(self, qs) -> None:
         """Enqueue a check_document Celery task for each document."""
-        from monitor.tasks import check_document  # import here to avoid hard dep when Celery not installed
+        from monitor.tasks import (
+            check_document,  # import here to avoid hard dep when Celery not installed
+        )
 
         enqueued = 0
         for doc in qs:
             check_document.delay(doc.pk)
             self.stdout.write(f"  [async] Enqueued task for: {doc}")
             enqueued += 1
-        self.stdout.write(self.style.SUCCESS(f"\nEnqueued {enqueued} task(s). Make sure a Celery worker is running."))
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"\nEnqueued {enqueued} task(s). Make sure a Celery worker is running."
+            )
+        )
 
     def _run_sync(self, qs, total: int) -> None:
         """Fetch each document synchronously in the current process."""
@@ -124,7 +131,5 @@ class Command(BaseCommand):
                 errors += 1
 
         self.stdout.write(
-            self.style.SUCCESS(
-                f"\nDone. {changed}/{total} document(s) changed. {errors} error(s)."
-            )
+            self.style.SUCCESS(f"\nDone. {changed}/{total} document(s) changed. {errors} error(s).")
         )

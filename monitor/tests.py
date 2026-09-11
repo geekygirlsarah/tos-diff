@@ -60,7 +60,7 @@ class TagModelTest(TestCase):
 
     def test_unique_name(self):
         Tag.objects.create(name="Unique Tag")
-        with self.assertRaises(Exception):
+        with self.assertRaises(IntegrityError):
             Tag.objects.create(name="Unique Tag")
 
 
@@ -139,10 +139,10 @@ class OrganizationParentTest(TestCase):
 
     def test_subsidiaries_reverse_relation(self):
         meta = Organization.objects.create(name="Meta", website_url="https://meta.com")
-        facebook = Organization.objects.create(
+        Organization.objects.create(
             name="Facebook", website_url="https://facebook.com", parent=meta
         )
-        instagram = Organization.objects.create(
+        Organization.objects.create(
             name="Instagram", website_url="https://instagram.com", parent=meta
         )
         subsidiary_names = set(meta.subsidiaries.values_list("name", flat=True))
@@ -204,7 +204,7 @@ class CountryModelTest(TestCase):
 
     def test_code_unique(self):
         Country.objects.create(name="United States", code="US")
-        with self.assertRaises(Exception):
+        with self.assertRaises(IntegrityError):
             Country.objects.create(name="US Again", code="US")
 
     def test_ordering_by_name(self):
@@ -242,7 +242,7 @@ class LanguageModelTest(TestCase):
     def test_code_unique(self):
         Language.objects.filter(code="en").delete()
         Language.objects.create(name="English", code="en")
-        with self.assertRaises(Exception):
+        with self.assertRaises(IntegrityError):
             Language.objects.create(name="English Again", code="en")
 
     def test_ordering_by_name(self):
@@ -590,7 +590,6 @@ class ExtractPdfTextTest(TestCase):
 
     def test_extract_returns_string(self):
         """extract_pdf_text returns a non-empty string for valid PDF bytes."""
-        import io as _io
 
         # Use pdfplumber's own test fixture approach: mock page.extract_text
         with patch("pdfplumber.open") as mock_open:

@@ -5,27 +5,49 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('monitor', '0005_organization_parent'),
+        ("monitor", "0005_organization_parent"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='Country',
+            name="Country",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('name', models.CharField(help_text='Display name, e.g. "United States", "France"', max_length=100)),
-                ('code', models.CharField(help_text='ISO 3166-1 alpha-2 code, e.g. "US", "FR"', max_length=2, unique=True)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                    ),
+                ),
+                (
+                    "name",
+                    models.CharField(
+                        help_text='Display name, e.g. "United States", "France"', max_length=100
+                    ),
+                ),
+                (
+                    "code",
+                    models.CharField(
+                        help_text='ISO 3166-1 alpha-2 code, e.g. "US", "FR"',
+                        max_length=2,
+                        unique=True,
+                    ),
+                ),
             ],
             options={
-                'verbose_name_plural': 'countries',
-                'ordering': ['name'],
+                "verbose_name_plural": "countries",
+                "ordering": ["name"],
             },
         ),
         migrations.AddField(
-            model_name='document',
-            name='country',
-            field=models.ForeignKey(blank=True, help_text='Country this document specifically applies to, if any.', null=True, on_delete=django.db.models.deletion.SET_NULL, to='monitor.country'),
+            model_name="document",
+            name="country",
+            field=models.ForeignKey(
+                blank=True,
+                help_text="Country this document specifically applies to, if any.",
+                null=True,
+                on_delete=django.db.models.deletion.SET_NULL,
+                to="monitor.country",
+            ),
         ),
     ]

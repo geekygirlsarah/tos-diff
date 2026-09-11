@@ -4,15 +4,19 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('monitor', '0007_payment_service_terms'),
+        ("monitor", "0007_payment_service_terms"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='document',
-            name='document_format',
-            field=models.CharField(choices=[('html', 'HTML'), ('pdf', 'PDF'), ('txt', 'TXT')], default='html', help_text='Format of the fetched document (set automatically during fetch).', max_length=10),
+            model_name="document",
+            name="document_format",
+            field=models.CharField(
+                choices=[("html", "HTML"), ("pdf", "PDF"), ("txt", "TXT")],
+                default="html",
+                help_text="Format of the fetched document (set automatically during fetch).",
+                max_length=10,
+            ),
         ),
     ]

@@ -5,15 +5,21 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('monitor', '0004_document_other_type_label'),
+        ("monitor", "0004_document_other_type_label"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='organization',
-            name='parent',
-            field=models.ForeignKey(blank=True, help_text='Parent organization, e.g. Meta is the parent of Facebook and Instagram.', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='subsidiaries', to='monitor.organization'),
+            model_name="organization",
+            name="parent",
+            field=models.ForeignKey(
+                blank=True,
+                help_text="Parent organization, e.g. Meta is the parent of Facebook and Instagram.",
+                null=True,
+                on_delete=django.db.models.deletion.SET_NULL,
+                related_name="subsidiaries",
+                to="monitor.organization",
+            ),
         ),
     ]

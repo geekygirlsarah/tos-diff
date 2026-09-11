@@ -4,31 +4,56 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('monitor', '0009_document_fetch_config'),
+        ("monitor", "0009_document_fetch_config"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='Tag',
+            name="Tag",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('name', models.CharField(max_length=100, unique=True)),
-                ('slug', models.SlugField(blank=True, max_length=100, unique=True)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                    ),
+                ),
+                ("name", models.CharField(max_length=100, unique=True)),
+                ("slug", models.SlugField(blank=True, max_length=100, unique=True)),
             ],
             options={
-                'ordering': ['name'],
+                "ordering": ["name"],
             },
         ),
         migrations.AddField(
-            model_name='organization',
-            name='category',
-            field=models.CharField(blank=True, choices=[('technology', 'Technology & Software'), ('financial', 'Financial Services'), ('healthcare', 'Healthcare & Pharmaceuticals'), ('entertainment_streaming', 'Entertainment & Streaming'), ('media', 'Media & Entertainment'), ('social_media', 'Social Media & Content Platforms'), ('hospitality', 'Hospitality & Hotels'), ('retail', 'Retail & E-Commerce'), ('other', 'Other')], default='', help_text='Industry category for this organization.', max_length=30),
+            model_name="organization",
+            name="category",
+            field=models.CharField(
+                blank=True,
+                choices=[
+                    ("technology", "Technology & Software"),
+                    ("financial", "Financial Services"),
+                    ("healthcare", "Healthcare & Pharmaceuticals"),
+                    ("entertainment_streaming", "Entertainment & Streaming"),
+                    ("media", "Media & Entertainment"),
+                    ("social_media", "Social Media & Content Platforms"),
+                    ("hospitality", "Hospitality & Hotels"),
+                    ("retail", "Retail & E-Commerce"),
+                    ("other", "Other"),
+                ],
+                default="",
+                help_text="Industry category for this organization.",
+                max_length=30,
+            ),
         ),
         migrations.AddField(
-            model_name='organization',
-            name='tags',
-            field=models.ManyToManyField(blank=True, help_text='Tags for this organization.', related_name='organizations', to='monitor.tag'),
+            model_name="organization",
+            name="tags",
+            field=models.ManyToManyField(
+                blank=True,
+                help_text="Tags for this organization.",
+                related_name="organizations",
+                to="monitor.tag",
+            ),
         ),
     ]

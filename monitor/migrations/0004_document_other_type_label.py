@@ -4,15 +4,19 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('monitor', '0003_language_document_updates'),
+        ("monitor", "0003_language_document_updates"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='document',
-            name='other_document_type',
-            field=models.CharField(blank=True, default='', help_text='Describe the document type when "Other" is selected.', max_length=255),
+            model_name="document",
+            name="other_document_type",
+            field=models.CharField(
+                blank=True,
+                default="",
+                help_text='Describe the document type when "Other" is selected.',
+                max_length=255,
+            ),
         ),
     ]

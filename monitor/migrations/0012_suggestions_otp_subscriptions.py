@@ -6,71 +6,200 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('monitor', '0011_add_failing_flags_and_document_name'),
+        ("monitor", "0011_add_failing_flags_and_document_name"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='LoginCode',
+            name="LoginCode",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('email', models.EmailField(db_index=True, max_length=254)),
-                ('code_hash', models.CharField(help_text='SHA-256 of the plain code.', max_length=64)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('expires_at', models.DateTimeField()),
-                ('used_at', models.DateTimeField(blank=True, null=True)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                    ),
+                ),
+                ("email", models.EmailField(db_index=True, max_length=254)),
+                (
+                    "code_hash",
+                    models.CharField(help_text="SHA-256 of the plain code.", max_length=64),
+                ),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("expires_at", models.DateTimeField()),
+                ("used_at", models.DateTimeField(blank=True, null=True)),
             ],
             options={
-                'ordering': ['-created_at'],
+                "ordering": ["-created_at"],
             },
         ),
         migrations.CreateModel(
-            name='Suggestion',
+            name="Suggestion",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('organization_name', models.CharField(help_text='Suggested company or organization name.', max_length=255)),
-                ('website_url', models.URLField(help_text='Company home page / website URL.', max_length=500)),
-                ('document_url', models.URLField(help_text='Direct URL to the policy document.', max_length=500)),
-                ('document_type', models.CharField(choices=[('tos', 'Terms of Service'), ('privacy', 'Privacy Policy'), ('cookie', 'Cookie Policy'), ('refund', 'Refund Policy'), ('childrens_privacy', "Children's Privacy Policy"), ('subscription', 'Subscription Policy'), ('service_agreement', 'Service Agreement'), ('service_fees', 'Service Fees'), ('user_agreement', 'User Agreement'), ('conduct', 'Code of Conduct / Community Standards'), ('acceptable_use', 'Acceptable Use Policy'), ('dmca', 'DMCA / Copyright Policy'), ('payment_service', 'Payment Service Terms'), ('other', 'Other')], default='tos', help_text='Type of document being suggested.', max_length=20)),
-                ('other_document_type', models.CharField(blank=True, default='', help_text='Describe the document type when "Other" is selected.', max_length=255)),
-                ('contact_email', models.EmailField(blank=True, default='', help_text='Optional email address if we need to follow up.', max_length=254)),
-                ('notes', models.TextField(blank=True, default='', help_text='Any additional notes about the suggestion.')),
-                ('status', models.CharField(choices=[('pending', 'Pending'), ('approved', 'Approved'), ('rejected', 'Rejected')], default='pending', help_text='Review status of this suggestion.', max_length=20)),
-                ('submitted_at', models.DateTimeField(auto_now_add=True)),
-                ('reviewed_at', models.DateTimeField(blank=True, help_text='When the suggestion was reviewed.', null=True)),
-                ('review_notes', models.TextField(blank=True, default='', help_text='Internal notes from the review process.')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                    ),
+                ),
+                (
+                    "organization_name",
+                    models.CharField(
+                        help_text="Suggested company or organization name.", max_length=255
+                    ),
+                ),
+                (
+                    "website_url",
+                    models.URLField(help_text="Company home page / website URL.", max_length=500),
+                ),
+                (
+                    "document_url",
+                    models.URLField(help_text="Direct URL to the policy document.", max_length=500),
+                ),
+                (
+                    "document_type",
+                    models.CharField(
+                        choices=[
+                            ("tos", "Terms of Service"),
+                            ("privacy", "Privacy Policy"),
+                            ("cookie", "Cookie Policy"),
+                            ("refund", "Refund Policy"),
+                            ("childrens_privacy", "Children's Privacy Policy"),
+                            ("subscription", "Subscription Policy"),
+                            ("service_agreement", "Service Agreement"),
+                            ("service_fees", "Service Fees"),
+                            ("user_agreement", "User Agreement"),
+                            ("conduct", "Code of Conduct / Community Standards"),
+                            ("acceptable_use", "Acceptable Use Policy"),
+                            ("dmca", "DMCA / Copyright Policy"),
+                            ("payment_service", "Payment Service Terms"),
+                            ("other", "Other"),
+                        ],
+                        default="tos",
+                        help_text="Type of document being suggested.",
+                        max_length=20,
+                    ),
+                ),
+                (
+                    "other_document_type",
+                    models.CharField(
+                        blank=True,
+                        default="",
+                        help_text='Describe the document type when "Other" is selected.',
+                        max_length=255,
+                    ),
+                ),
+                (
+                    "contact_email",
+                    models.EmailField(
+                        blank=True,
+                        default="",
+                        help_text="Optional email address if we need to follow up.",
+                        max_length=254,
+                    ),
+                ),
+                (
+                    "notes",
+                    models.TextField(
+                        blank=True,
+                        default="",
+                        help_text="Any additional notes about the suggestion.",
+                    ),
+                ),
+                (
+                    "status",
+                    models.CharField(
+                        choices=[
+                            ("pending", "Pending"),
+                            ("approved", "Approved"),
+                            ("rejected", "Rejected"),
+                        ],
+                        default="pending",
+                        help_text="Review status of this suggestion.",
+                        max_length=20,
+                    ),
+                ),
+                ("submitted_at", models.DateTimeField(auto_now_add=True)),
+                (
+                    "reviewed_at",
+                    models.DateTimeField(
+                        blank=True, help_text="When the suggestion was reviewed.", null=True
+                    ),
+                ),
+                (
+                    "review_notes",
+                    models.TextField(
+                        blank=True, default="", help_text="Internal notes from the review process."
+                    ),
+                ),
             ],
             options={
-                'ordering': ['-submitted_at', '-pk'],
+                "ordering": ["-submitted_at", "-pk"],
             },
         ),
         migrations.CreateModel(
-            name='DocumentSubscription',
+            name="DocumentSubscription",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('document', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='subscribers', to='monitor.document')),
-                ('user', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='document_subscriptions', to=settings.AUTH_USER_MODEL)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                    ),
+                ),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                (
+                    "document",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="subscribers",
+                        to="monitor.document",
+                    ),
+                ),
+                (
+                    "user",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="document_subscriptions",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
             options={
-                'ordering': ['document__organization__name', 'document__document_type'],
-                'unique_together': {('user', 'document')},
+                "ordering": ["document__organization__name", "document__document_type"],
+                "unique_together": {("user", "document")},
             },
         ),
         migrations.CreateModel(
-            name='OrganizationSubscription',
+            name="OrganizationSubscription",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('organization', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='subscribers', to='monitor.organization')),
-                ('user', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='organization_subscriptions', to=settings.AUTH_USER_MODEL)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                    ),
+                ),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                (
+                    "organization",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="subscribers",
+                        to="monitor.organization",
+                    ),
+                ),
+                (
+                    "user",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="organization_subscriptions",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
             options={
-                'ordering': ['organization__name'],
-                'unique_together': {('user', 'organization')},
+                "ordering": ["organization__name"],
+                "unique_together": {("user", "organization")},
             },
         ),
     ]

@@ -4,15 +4,18 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('monitor', '0001_initial'),
+        ("monitor", "0001_initial"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='document',
-            name='custom_selectors',
-            field=models.TextField(blank=True, default='', help_text='CSS selectors to exclude before text extraction, one per line. Example: .cookie-banner\n#sidebar'),
+            model_name="document",
+            name="custom_selectors",
+            field=models.TextField(
+                blank=True,
+                default="",
+                help_text="CSS selectors to exclude before text extraction, one per line. Example: .cookie-banner\n#sidebar",
+            ),
         ),
     ]

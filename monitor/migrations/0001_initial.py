@@ -5,60 +5,106 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
-    dependencies = [
-    ]
+    dependencies = []
 
     operations = [
         migrations.CreateModel(
-            name='Document',
+            name="Document",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('document_type', models.CharField(choices=[('tos', 'Terms of Service'), ('privacy', 'Privacy Policy'), ('cookie', 'Cookie Policy'), ('other', 'Other')], default='tos', max_length=20)),
-                ('url', models.URLField(max_length=500)),
-                ('fetch_method', models.CharField(choices=[('requests', 'HTTP Requests'), ('playwright', 'Playwright (headless browser)')], default='requests', max_length=20)),
-                ('last_checked', models.DateTimeField(blank=True, null=True)),
-                ('last_changed', models.DateTimeField(blank=True, null=True)),
-                ('is_active', models.BooleanField(default=True)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                    ),
+                ),
+                (
+                    "document_type",
+                    models.CharField(
+                        choices=[
+                            ("tos", "Terms of Service"),
+                            ("privacy", "Privacy Policy"),
+                            ("cookie", "Cookie Policy"),
+                            ("other", "Other"),
+                        ],
+                        default="tos",
+                        max_length=20,
+                    ),
+                ),
+                ("url", models.URLField(max_length=500)),
+                (
+                    "fetch_method",
+                    models.CharField(
+                        choices=[
+                            ("requests", "HTTP Requests"),
+                            ("playwright", "Playwright (headless browser)"),
+                        ],
+                        default="requests",
+                        max_length=20,
+                    ),
+                ),
+                ("last_checked", models.DateTimeField(blank=True, null=True)),
+                ("last_changed", models.DateTimeField(blank=True, null=True)),
+                ("is_active", models.BooleanField(default=True)),
             ],
             options={
-                'ordering': ['organization', 'document_type'],
+                "ordering": ["organization", "document_type"],
             },
         ),
         migrations.CreateModel(
-            name='Organization',
+            name="Organization",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('name', models.CharField(max_length=255)),
-                ('slug', models.SlugField(blank=True, max_length=255, unique=True)),
-                ('website_url', models.URLField(max_length=500)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                    ),
+                ),
+                ("name", models.CharField(max_length=255)),
+                ("slug", models.SlugField(blank=True, max_length=255, unique=True)),
+                ("website_url", models.URLField(max_length=500)),
             ],
             options={
-                'ordering': ['name'],
+                "ordering": ["name"],
             },
         ),
         migrations.CreateModel(
-            name='DocumentSnapshot',
+            name="DocumentSnapshot",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('captured_at', models.DateTimeField(auto_now_add=True)),
-                ('cleaned_text', models.TextField()),
-                ('text_hash', models.CharField(db_index=True, max_length=64)),
-                ('document', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='snapshots', to='monitor.document')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                    ),
+                ),
+                ("captured_at", models.DateTimeField(auto_now_add=True)),
+                ("cleaned_text", models.TextField()),
+                ("text_hash", models.CharField(db_index=True, max_length=64)),
+                (
+                    "document",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="snapshots",
+                        to="monitor.document",
+                    ),
+                ),
             ],
             options={
-                'ordering': ['-captured_at'],
+                "ordering": ["-captured_at"],
             },
         ),
         migrations.AddField(
-            model_name='document',
-            name='organization',
-            field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='documents', to='monitor.organization'),
+            model_name="document",
+            name="organization",
+            field=models.ForeignKey(
+                on_delete=django.db.models.deletion.CASCADE,
+                related_name="documents",
+                to="monitor.organization",
+            ),
         ),
         migrations.AlterUniqueTogether(
-            name='document',
-            unique_together={('organization', 'document_type', 'url')},
+            name="document",
+            unique_together={("organization", "document_type", "url")},
         ),
     ]
