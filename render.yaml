@@ -18,7 +18,7 @@ services:
     healthCheckPath: /
     envVars:
       - key: DJANGO_SECRET_KEY
-        generateValue: true
+        sync: false  # set/update on the service in the Render dashboard
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_ALLOWED_HOSTS
@@ -33,6 +33,14 @@ services:
         value: "2"
       - key: GUNICORN_TIMEOUT
         value: "120"
+      - key: EMAIL_HOST
+        sync: false
+      - key: EMAIL_HOST_USER
+        sync: false
+      - key: EMAIL_HOST_PASSWORD
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        sync: false
   - type: cron
     name: fetch-documents
     runtime: docker
@@ -43,7 +51,7 @@ services:
     dockerCommand: manage fetch_documents
     envVars:
       - key: DJANGO_SECRET_KEY
-        value: "cron-placeholder-not-used-by-fetch"
+        sync: false  # set/update on the service in the Render dashboard
       - key: DJANGO_DEBUG
         value: "false"
       - key: DB_ENGINE
