@@ -57,6 +57,6 @@ services:
 
 databases:
   - name: tosdiff-db
-    plan: starter
+    plan: free
     databaseName: tosdiff
     user: tosdiff
