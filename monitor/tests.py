@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 from django.conf import settings
+from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.db import IntegrityError
@@ -1414,6 +1415,37 @@ class SuggestionModelTest(TestCase):
         suggestion.create_organization_and_document()
         self.assertEqual(Organization.objects.count(), 1)
         self.assertEqual(Document.objects.count(), 1)
+
+
+class SuggestionAdminTest(TestCase):
+    def setUp(self):
+        from .admin import SuggestionAdmin
+
+        self.admin = SuggestionAdmin(model=Suggestion, admin_site=admin.site)
+        self.suggestion = Suggestion.objects.create(
+            organization_name="Acme",
+            website_url="https://acme.com",
+            document_url="https://acme.com/privacy",
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+            contact_email="user@example.com",
+        )
+
+    def test_approve_and_create_creates_org_and_document(self):
+        self.admin.approve_and_create(MagicMock(), Suggestion.objects.filter(pk=self.suggestion.pk))
+        self.suggestion.refresh_from_db()
+        self.assertEqual(self.suggestion.status, Suggestion.Status.APPROVED)
+        self.assertTrue(Organization.objects.filter(website_url="https://acme.com").exists())
+        self.assertTrue(Document.objects.filter(url="https://acme.com/privacy").exists())
+
+    def test_approve_marks_suggestion_approved(self):
+        self.admin.approve(MagicMock(), Suggestion.objects.filter(pk=self.suggestion.pk))
+        self.suggestion.refresh_from_db()
+        self.assertEqual(self.suggestion.status, Suggestion.Status.APPROVED)
+
+    def test_reject_marks_suggestion_rejected(self):
+        self.admin.reject(MagicMock(), Suggestion.objects.filter(pk=self.suggestion.pk))
+        self.suggestion.refresh_from_db()
+        self.assertEqual(self.suggestion.status, Suggestion.Status.REJECTED)
 
 
 class LoginCodeModelTest(TestCase):

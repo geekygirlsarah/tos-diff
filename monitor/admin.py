@@ -1,4 +1,6 @@
 from django.contrib import admin
+from django.db.models import QuerySet
+from django.http import HttpRequest
 from django.utils import timezone
 from django.utils.html import format_html
 
@@ -156,7 +158,7 @@ class SuggestionAdmin(admin.ModelAdmin):
     actions = ["approve_and_create", "approve", "reject"]
 
     @admin.action(description="Approve and create Organization + Document")
-    def approve_and_create(self, request: admin.request, queryset: admin.QuerySet) -> None:
+    def approve_and_create(self, request: HttpRequest, queryset: QuerySet) -> None:
         now = timezone.now()
         for suggestion in queryset.filter(status=Suggestion.Status.PENDING):
             suggestion.create_organization_and_document()
@@ -166,7 +168,7 @@ class SuggestionAdmin(admin.ModelAdmin):
         self.message_user(request, "Approved selected suggestions and created orgs/documents.")
 
     @admin.action(description="Approve (status only)")
-    def approve(self, request: admin.request, queryset: admin.QuerySet) -> None:
+    def approve(self, request: HttpRequest, queryset: QuerySet) -> None:
         queryset.filter(status=Suggestion.Status.PENDING).update(
             status=Suggestion.Status.APPROVED,
             reviewed_at=timezone.now(),
@@ -174,7 +176,7 @@ class SuggestionAdmin(admin.ModelAdmin):
         self.message_user(request, "Marked suggestions as approved.")
 
     @admin.action(description="Reject")
-    def reject(self, request: admin.request, queryset: admin.QuerySet) -> None:
+    def reject(self, request: HttpRequest, queryset: QuerySet) -> None:
         queryset.filter(status=Suggestion.Status.PENDING).update(
             status=Suggestion.Status.REJECTED,
             reviewed_at=timezone.now(),
