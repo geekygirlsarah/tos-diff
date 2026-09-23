@@ -11,9 +11,9 @@
 services:
   - type: web
     name: tosdiff
-    runtime: image
-    image:
-      url: https://github.com/geekygirlsarah/tos-diff.git  # ← replace with your repo
+    runtime: docker
+    repo: https://github.com/geekygirlsarah/tos-diff.git
+    branch: main
     plan: starter
     healthCheckPath: /
     envVars:
@@ -35,12 +35,12 @@ services:
         value: "120"
   - type: cron
     name: fetch-documents
-    runtime: image
-    image:
-      url: https://github.com/geekygirlsarah/tos-diff.git  # ← same repo
+    runtime: docker
+    repo: https://github.com/geekygirlsarah/tos-diff.git
+    branch: main
     plan: starter
     schedule: "0 2 * * *"  # 02:00 UTC daily
-    startCommand: manage fetch_documents
+    dockerCommand: manage fetch_documents
     envVars:
       - key: DJANGO_SECRET_KEY
         value: "cron-placeholder-not-used-by-fetch"
