@@ -3,15 +3,30 @@ set -e
 
 # Wait for PostgreSQL to be ready (only when using postgres engine)
 if [ "$DB_ENGINE" = "postgresql" ]; then
-    echo "Waiting for PostgreSQL at $DB_HOST:$DB_PORT..."
+    echo "Waiting for PostgreSQL to be ready..."
     until python -c "
-import sys, psycopg
+import os, sys, psycopg
+from urllib.parse import urlparse
+url = os.environ.get('DATABASE_URL')
+if url:
+    parts = urlparse(url)
+    kwargs = {
+        'host': parts.hostname or 'localhost',
+        'port': parts.port or 5432,
+        'dbname': parts.path.lstrip('/'),
+        'user': parts.username or '',
+        'password': parts.password or '',
+    }
+else:
+    kwargs = {
+        'host': os.environ.get('DB_HOST', 'localhost'),
+        'port': os.environ.get('DB_PORT', 5432),
+        'dbname': os.environ.get('DB_NAME', 'tosdiff'),
+        'user': os.environ.get('DB_USER', 'tosdiff'),
+        'password': os.environ.get('DB_PASSWORD', ''),
+    }
 try:
-    psycopg.connect(
-        host='$DB_HOST', port='$DB_PORT',
-        dbname='$DB_NAME', user='$DB_USER', password='$DB_PASSWORD',
-        connect_timeout=2,
-    ).close()
+    psycopg.connect(connect_timeout=2, **kwargs).close()
     sys.exit(0)
 except Exception:
     sys.exit(1)
