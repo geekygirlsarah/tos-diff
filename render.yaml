@@ -13,7 +13,7 @@ services:
     name: tosdiff
     runtime: image
     image:
-      url: https://github.com/geekygirlsarah/TosDiff-New.git  # ← replace with your repo
+      url: https://github.com/geekygirlsarah/tos-diff.git  # ← replace with your repo
     plan: starter
     healthCheckPath: /
     envVars:
@@ -37,7 +37,7 @@ services:
     name: fetch-documents
     runtime: image
     image:
-      url: https://github.com/geekygirlsarah/TosDiff-New.git  # ← same repo
+      url: https://github.com/geekygirlsarah/tos-diff.git  # ← same repo
     plan: starter
     schedule: "0 2 * * *"  # 02:00 UTC daily
     startCommand: manage fetch_documents
