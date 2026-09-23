@@ -195,6 +195,14 @@ CELERY_BEAT_SCHEDULE = {
         "task": "monitor.tasks.check_all_documents",
         "schedule": crontab(hour=2, minute=0),  # 02:00 UTC daily
     },
+    "send-daily-digests": {
+        "task": "monitor.tasks.send_daily_digests",
+        "schedule": crontab(hour=9, minute=0),  # 09:00 UTC daily
+    },
+    "send-weekly-digests": {
+        "task": "monitor.tasks.send_weekly_digests",
+        "schedule": crontab(hour=9, minute=0, day_of_week="monday"),  # 09:00 UTC Mondays
+    },
 }
 
 LOGGING = {

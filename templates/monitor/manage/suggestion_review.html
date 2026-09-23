@@ -53,6 +53,13 @@
         {% endif %}
       </dl>
 
+      {% if is_duplicate %}
+      <div class="alert alert-warning" role="alert">
+        This website already exists in TosDiff as an organization.
+        Approving this suggestion may create a duplicate entry.
+      </div>
+      {% endif %}
+
       <form method="post" novalidate class="mt-4">
         {% csrf_token %}
         {% if form.review_notes.errors %}

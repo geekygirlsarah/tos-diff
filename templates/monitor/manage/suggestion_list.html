@@ -46,6 +46,9 @@
           <td class="small">{{ suggestion.submitted_at|date:"Y-m-d H:i" }}</td>
           <td>
             {{ suggestion.organization_name }}
+            {% if suggestion.is_duplicate %}
+              <span class="td-badge" style="background: #fee2e2; color: #991b1b;">Duplicate</span>
+            {% endif %}
             <div class="small" style="color: var(--td-text-muted);">
               <a href="{{ suggestion.website_url }}" target="_blank" rel="noopener noreferrer">{{ suggestion.website_url }}</a>
             </div>

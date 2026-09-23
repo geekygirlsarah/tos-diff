@@ -153,17 +153,26 @@ When implementing a new feature or fixing a bug:
 Superusers get a custom management area (in addition to Django admin) under `/manage/`:
 
 - `manage_dashboard` — counts + quick-action links to every management page
-- `manage_organizations`, `manage_organization_create`, `manage_organization_update` — CRUD for `Organization`
-- `manage_documents`, `manage_document_create`, `manage_document_update` — CRUD for `Document`; `manage_document_create_for_organization` (`/manage/organizations/<pk>/documents/add/`) preselects the organization
-- `manage_suggestions`, `manage_suggestion_approve`, `manage_suggestion_reject` — review queue; approving calls `Suggestion.create_organization_and_document()` and marks the suggestion approved
-- `manage_tags`, `manage_tag_create`, `manage_tag_update` — CRUD for `Tag`
+- `manage_organizations`, `manage_organization_create`, `manage_organization_update` — CRUD for `Organization`; `manage_organization_delete` confirms + cascades
+- `manage_documents`, `manage_document_create`, `manage_document_update` — CRUD for `Document`; `manage_document_create_for_organization` (`/manage/organizations/<pk>/documents/add/`) preselects the organization; `manage_document_delete`; `manage_document_check` (POST) triggers `check_document.delay(document.pk)` immediately
+- `manage_suggestions`, `manage_suggestion_approve`, `manage_suggestion_reject` — review queue; approving calls `Suggestion.create_organization_and_document()` and marks the suggestion approved; `manage_suggestion_delete`. The list view annotates `is_duplicate` (an `Organization` already exists with the same `website_url`) and the review page warns accordingly. Approving/rejecting emails the submitter via `send_suggestion_review_email()` (skipped when no `contact_email`).
+- `manage_tags`, `manage_tag_create`, `manage_tag_update`, `manage_tag_delete` — CRUD for `Tag`
+- `manage_attention` (`/manage/attention/`) — needs-attention panel (failing/inactive/never-checked documents)
+- `manage_users` (`/manage/users/`) — user overview with search, pagination, and `document_subscription_count` / `organization_subscription_count` annotations
 
 Conventions:
 - Every view subclasses `SuperuserRequiredMixin` in `monitor/views.py` (redirects anonymous users to login, returns 403 for non-superusers).
 - Forms live in `monitor/forms.py` (`OrganizationForm`, `DocumentForm`, `TagForm`, `SuggestionReviewForm`); they style fields with `form-control`/`form-select` and use the shared `_field.html` partial in templates.
-- Templates live in `templates/monitor/manage/`; they are responsive (`.table-responsive` wrappers, `flex-wrap`, `col-*` grids).
+- Templates live in `templates/monitor/manage/`; they are responsive (`.table-responsive` wrappers, `flex-wrap`, `col-*` grids). Edit forms show a "Delete" link (and document forms a "Check now" button) when editing an existing object.
 - The navbar shows an "Admin" link only to superusers.
 - Keep URL names `manage_*` and prefix all routes with `/manage/`.
+- Delete flows share the `confirm_delete.html` template and the message-flash block in `base.html`.
+
+## Email Delivery & Subscription Preferences
+
+- Change notification emails (`build_snapshot_change_message` in `services.py`) include an absolute one-click unsubscribe link signed with `make_unsubscribe_token()` (`services.py`). `UnsubscribeTokenView` (`/unsubscribe/<token>/`) removes the matching `DocumentSubscription` without login (invalid/expired tokens → 404); organization subscriptions are untouched.
+- `NotificationPreference` (OneToOne with user, `frequency` in immediate/daily/weekly) controls delivery. `send_change_notifications` emails immediately by default, otherwise queues a `PendingNotification`. `send_daily_digests` / `send_weekly_digests` (Celery tasks, wired into `CELERY_BEAT_SCHEDULE` in `settings.py`) send one digest email per user with links + unsubscribe per document, then clear that user's queue. The account page (`monitor/account.html`) edits the preference and lists `my_suggestions`.
+- `Suggestion.user` (nullable FK, `SET_NULL`) records the logged-in submitter; anonymous submissions leave it null.
 
 ## UI & Templates
 
@@ -228,6 +237,21 @@ All three jobs must pass before merging.
 - `captured_at` (auto_now_add)
 - `cleaned_text` — markdown-like plain text
 - `text_hash` — SHA-256 of `cleaned_text` (indexed); used for deduplication
+
+### `Suggestion`
+- `organization_name`, `website_url`, `document_url`, `document_type`, `other_document_type`
+- `contact_email` (optional; checked before any review email is sent), `notes`
+- `user` — nullable FK to the logged-in submitter (`SET_NULL`); null for anonymous submissions
+- `status` (pending/approved/rejected), `submitted_at`, `reviewed_at`, `review_notes`
+- `create_organization_and_document()` — idempotent get_or_create of an `Organization` + `Document`
+
+### `NotificationPreference`
+- OneToOne with user; `frequency` in `TextChoices` (immediate/daily/weekly), defaults to immediate
+- Absence of a row means immediate delivery (so task behavior stays compatible)
+
+### `PendingNotification`
+- Queued change notification for digest users: `user`, `document`, `snapshot`, `old_snapshot` (nullable), `created_at`
+- Rows are created by `send_change_notifications` for daily/weekly users and deleted by `send_daily_digests` / `send_weekly_digests` after the digest email is sent
 
 ---
 

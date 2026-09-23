@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block title %}Unsubscribed — TosDiff{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-7">
+    <div class="td-card p-5 text-center mb-4">
+      <h1 class="h3 mb-2" style="color: var(--td-primary-dark);">
+        You've been unsubscribed
+      </h1>
+      <p style="color: var(--td-text-muted); max-width: 26rem; margin: 0 auto;">
+        You'll no longer receive change notifications for this document.
+        Changes to other documents you follow are unaffected.
+      </p>
+      <div class="mt-4 d-flex flex-wrap justify-content-center gap-2">
+        <a href="{% url 'monitor:home' %}" class="btn td-btn-primary">
+          Back to recent changes
+        </a>
+        {% if user.is_authenticated %}
+        <a href="{% url 'monitor:account' %}" class="btn td-btn-outline">
+          Manage subscriptions
+        </a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

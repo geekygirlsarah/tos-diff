@@ -703,18 +703,41 @@ def send_login_code_email(email: str, code: str, ttl_minutes: int = LOGIN_CODE_T
 # Change notification emails
 # ---------------------------------------------------------------------------
 
+UNSUBSCRIBE_SALT = "tosdiff.unsubscribe"
+UNSUBSCRIBE_MAX_AGE = 365 * 24 * 60 * 60  # 1 year
+
+
+def make_unsubscribe_token(user_id: int, document_id: int) -> str:
+    """Sign a (user, document) pair so it can be turned into an email link."""
+    return signing.dumps(
+        {"user_id": user_id, "document_id": document_id},
+        salt=UNSUBSCRIBE_SALT,
+    )
+
+
+def read_unsubscribe_token(token: str) -> dict[str, int]:
+    """
+    Unpack a signed unsubscribe *token*.
+
+    Raises ``BadSignature`` when the token is invalid or too old.
+    """
+    payload = signing.loads(token, salt=UNSUBSCRIBE_SALT, max_age=UNSUBSCRIBE_MAX_AGE)
+    return {"user_id": int(payload["user_id"]), "document_id": int(payload["document_id"])}
+
 
 def build_snapshot_change_message(
     document: Document,
     snapshot: DocumentSnapshot,
     old_snapshot: DocumentSnapshot | None,
     site_url: str,
+    unsubscribe_url: str | None = None,
 ) -> tuple[str, str, str]:
     """
     Build the ``(subject, plain_body, html_body)`` for a change notification.
 
     Links are absolute, based on *site_url*, so the message is safe to send
-    from a Celery task (where no request/host is available).
+    from a Celery task (where no request/host is available).  *unsubscribe_url*
+    is appended as an ``Unsubscribe`` line/link when provided.
     """
     base = site_url.rstrip("/")
     detail_url = base + reverse("monitor:document_detail", args=[document.pk])
@@ -743,9 +766,16 @@ def build_snapshot_change_message(
         "You're receiving this because you subscribed to updates. "
         "Manage your subscriptions in your TosDiff account.",
     ]
+    if unsubscribe_url:
+        plain_lines.append(f"Unsubscribe from changes to this document: {unsubscribe_url}")
     plain_body = "\n".join(plain_lines)
 
     diff_html = f'<p><a href="{diff_url}">See what changed</a></p>' if diff_url else ""
+    unsubscribe_html = (
+        f'<br><a href="{unsubscribe_url}">Unsubscribe from changes to this document</a>'
+        if unsubscribe_url
+        else ""
+    )
     html_body = (
         "<html><body>"
         "<p>TosDiff detected a change to a document you're subscribed to.</p>"
@@ -755,8 +785,69 @@ def build_snapshot_change_message(
         f"{diff_html}"
         '<p style="color:#64748b;font-size:12px;">'
         "You're receiving this because you subscribed to updates. "
-        "Manage your subscriptions in your TosDiff account.</p>"
+        "Manage your subscriptions in your TosDiff account."
+        f"{unsubscribe_html}</p>"
         "</body></html>"
     )
 
     return subject, plain_body, html_body
+
+
+def send_suggestion_review_email(
+    suggestion,
+    *,
+    approved: bool,
+    site_url: str,
+    review_notes: str = "",
+    document=None,
+) -> None:
+    """
+    Email ``suggestion.contact_email`` with the outcome of a review.
+
+    *approved* is True when the suggestion was converted into a tracked
+    organization+document (*document* must be the created ``Document`` then);
+    False when it was rejected.  Does nothing when no contact email is set.
+    """
+    if not suggestion.contact_email:
+        return
+    base = site_url.rstrip("/")
+    org_name = suggestion.organization_name
+    if approved:
+        url = base + reverse("monitor:document_detail", args=[document.pk])
+        subject = f"[TosDiff] Your suggestion for {org_name} was approved"
+        plain_lines = [
+            f"Great news — your suggestion for {org_name} was approved and is now being tracked.",
+            "",
+            f"Tracked document: {document.display_name}",
+            "",
+            f"View it here: {url}",
+        ]
+        html = (
+            "<html><body>"
+            f"<p>Great news — your suggestion for <strong>{org_name}</strong> "
+            "was approved and is now being tracked.</p>"
+            f"<p>Tracked document: {document.display_name}<br>"
+            f'<a href="{url}">View it here</a></p>'
+            "</body></html>"
+        )
+    else:
+        subject = f"[TosDiff] Your suggestion for {org_name} was not approved"
+        plain_lines = [
+            f"Thank you for suggesting {org_name}.",
+            "",
+            "After review, this document isn't being added to TosDiff at this time.",
+        ]
+        html = (
+            "<html><body>"
+            f"<p>Thank you for suggesting <strong>{org_name}</strong>.</p>"
+            "<p>After review, this document isn't being added to TosDiff at this time.</p>"
+        )
+        if review_notes:
+            plain_lines += ["", f"Note from the reviewer: {review_notes}"]
+            html += f"<p>Note from the reviewer: {review_notes}</p>"
+        html += "</body></html>"
+
+    body = "\n".join(plain_lines)
+    send_mail(
+        subject, body, settings.DEFAULT_FROM_EMAIL, [suggestion.contact_email], html_message=html
+    )

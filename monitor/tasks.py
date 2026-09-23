@@ -15,17 +15,21 @@ from celery.signals import worker_shutdown
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.mail import send_mail
+from django.urls import reverse
 
 from .models import (
     Document,
     DocumentSnapshot,
     DocumentSubscription,
+    NotificationPreference,
     OrganizationSubscription,
+    PendingNotification,
 )
 from .services import (
     build_snapshot_change_message,
     close_playwright_browser,
     fetch_and_snapshot,
+    make_unsubscribe_token,
 )
 
 
@@ -138,16 +142,20 @@ def _dispatch_change_notifications(document: Document, snapshot: DocumentSnapsho
 @shared_task(name="monitor.tasks.send_change_notifications")
 def send_change_notifications(document_id: int, new_snapshot_id: int) -> dict:
     """
-    Email every subscriber of *document_id* about the new snapshot.
+    Notify every subscriber of *document_id* about the new snapshot.
 
     A user is notified if they subscribe to the document directly or to the
-    document's organization. Each user receives at most one email.
+    document's organization. Each user receives at most one notification.
+    Preference ``immediate`` (the default) emails them now; ``daily``/``weekly``
+    queue a ``PendingNotification`` for the digest task instead.
+
+    Returns ``{"sent": ..., "queued": ..., "error": ...}``.
     """
     try:
         document = Document.objects.select_related("organization").get(pk=document_id)
     except Document.DoesNotExist:
         logger.error("send_change_notifications: Document %s not found", document_id)
-        return {"sent": 0, "error": "Document not found"}
+        return {"sent": 0, "queued": 0, "error": "Document not found"}
 
     snapshot = document.snapshots.filter(pk=new_snapshot_id).first()
     if snapshot is None:
@@ -156,7 +164,7 @@ def send_change_notifications(document_id: int, new_snapshot_id: int) -> dict:
             new_snapshot_id,
             document_id,
         )
-        return {"sent": 0, "error": "Snapshot not found"}
+        return {"sent": 0, "queued": 0, "error": "Snapshot not found"}
 
     old_snapshot = document.snapshots.exclude(pk=new_snapshot_id).first()
 
@@ -173,29 +181,141 @@ def send_change_notifications(document_id: int, new_snapshot_id: int) -> dict:
         get_user_model().objects.filter(pk__in=user_ids, is_active=True).exclude(email="")
     )
     if not recipients:
-        return {"sent": 0, "error": None}
+        return {"sent": 0, "queued": 0, "error": None}
 
-    subject, plain_body, html_body = build_snapshot_change_message(
-        document, snapshot, old_snapshot, settings.BASE_URL
+    frequencies = dict(
+        NotificationPreference.objects.filter(user_id__in=user_ids).values_list(
+            "user_id", "frequency"
+        )
     )
 
     sent = 0
+    queued = 0
     for user in recipients:
+        if frequencies.get(user.pk, NotificationPreference.Frequency.IMMEDIATE) == (
+            NotificationPreference.Frequency.IMMEDIATE
+        ):
+            unsubscribe_url = settings.BASE_URL.rstrip("/") + reverse(
+                "monitor:unsubscribe_token",
+                args=[make_unsubscribe_token(user.pk, document.pk)],
+            )
+            subject, plain_body, html_body = build_snapshot_change_message(
+                document, snapshot, old_snapshot, settings.BASE_URL, unsubscribe_url
+            )
+            send_mail(
+                subject,
+                plain_body,
+                settings.DEFAULT_FROM_EMAIL,
+                [user.email],
+                html_message=html_body,
+            )
+            sent += 1
+        else:
+            PendingNotification.objects.create(
+                user=user,
+                document=document,
+                snapshot=snapshot,
+                old_snapshot=old_snapshot,
+            )
+            queued += 1
+
+    logger.info(
+        "send_change_notifications: sent %d / queued %d notification(s) for document %s",
+        sent,
+        queued,
+        document_id,
+    )
+    return {"sent": sent, "queued": queued, "error": None}
+
+
+def _send_digest(frequency: str, digest_label: str) -> dict:
+    """
+    Email one digest to each user whose preference is *frequency* with any
+    pending notifications, then clear their queue.
+    """
+    users = (
+        get_user_model()
+        .objects.filter(
+            notification_preference__frequency=frequency,
+            is_active=True,
+        )
+        .exclude(email="")
+    )
+    sent = 0
+    base = settings.BASE_URL.rstrip("/")
+    for user in users:
+        pending = list(
+            user.pending_notifications.select_related(
+                "document__organization", "snapshot", "old_snapshot"
+            ).order_by("created_at")
+        )
+        if not pending:
+            continue
+
+        plain_lines = [
+            "Here's a summary of documents that changed:",
+            "",
+        ]
+        html_items: list[str] = []
+        for notification in pending:
+            doc = notification.document
+            detail_url = base + reverse("monitor:document_detail", args=[doc.pk])
+            unsubscribe_url = base + reverse(
+                "monitor:unsubscribe_token",
+                args=[make_unsubscribe_token(user.pk, doc.pk)],
+            )
+            captured = notification.snapshot.captured_at
+            plain_lines.append(
+                f"- {doc.organization.name} — {doc.display_name} "
+                f"(captured {captured:%Y-%m-%d %H:%M UTC}): {detail_url}"
+            )
+            plain_lines.append(f"  Unsubscribe: {unsubscribe_url}")
+            html_items.append(
+                f"<li><strong>{doc.organization.name}</strong> — {doc.display_name} "
+                f"({captured:%Y-%m-%d %H:%M UTC}) — "
+                f'<a href="{detail_url}">view document</a> — '
+                f'<a href="{unsubscribe_url}">unsubscribe</a></li>'
+            )
+        plain_lines += [
+            "",
+            "You're receiving this because you subscribed to updates. "
+            "Manage your subscriptions in your TosDiff account.",
+        ]
+
+        subject = f"[TosDiff] {digest_label} digest — {len(pending)} document change(s)"
+        html_body = (
+            "<html><body>"
+            f"<p>Here's a summary of documents that changed:</p>"
+            f"<ul>{''.join(html_items)}</ul>"
+            '<p style="color:#64748b;font-size:12px;">'
+            "You're receiving this because you subscribed to updates. "
+            "Manage your subscriptions in your TosDiff account.</p>"
+            "</body></html>"
+        )
         send_mail(
             subject,
-            plain_body,
+            "\n".join(plain_lines),
             settings.DEFAULT_FROM_EMAIL,
             [user.email],
             html_message=html_body,
         )
+        user.pending_notifications.all().delete()
         sent += 1
 
-    logger.info(
-        "send_change_notifications: sent %d notification(s) for document %s",
-        sent,
-        document_id,
-    )
+    logger.info("_send_digest (%s): sent %d digest(s)", digest_label, sent)
     return {"sent": sent, "error": None}
+
+
+@shared_task(name="monitor.tasks.send_daily_digests")
+def send_daily_digests() -> dict:
+    """Email daily digest subscribers the changes queued since the last run."""
+    return _send_digest(NotificationPreference.Frequency.DAILY, "Daily")
+
+
+@shared_task(name="monitor.tasks.send_weekly_digests")
+def send_weekly_digests() -> dict:
+    """Email weekly digest subscribers the changes queued since the last run."""
+    return _send_digest(NotificationPreference.Frequency.WEEKLY, "Weekly")
 
 
 # ---------------------------------------------------------------------------

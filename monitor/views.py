@@ -3,11 +3,13 @@ import secrets
 from itertools import groupby
 from typing import TYPE_CHECKING
 
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import get_user_model, login
 from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.contrib.auth.views import LogoutView  # noqa: F401 – re-exported for urls
-from django.db.models import Count, Q
+from django.core import signing
+from django.db.models import Count, Exists, OuterRef, Q
 from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse_lazy
@@ -21,6 +23,7 @@ from .forms import (
     CodeLoginForm,
     DocumentForm,
     EmailLoginForm,
+    NotificationPreferenceForm,
     OrganizationForm,
     SuggestionForm,
     SuggestionReviewForm,
@@ -31,6 +34,7 @@ from .models import (
     DocumentSnapshot,
     DocumentSubscription,
     LoginCode,
+    NotificationPreference,
     Organization,
     OrganizationSubscription,
     Suggestion,
@@ -40,7 +44,9 @@ from .services import (
     LOGIN_CODE_TTL_MINUTES,
     compute_hash,
     generate_login_code,
+    read_unsubscribe_token,
     send_login_code_email,
+    send_suggestion_review_email,
 )
 from .tasks import check_document
 
@@ -345,7 +351,10 @@ class SuggestDocumentView(FormView):
         return context
 
     def form_valid(self, form) -> HttpResponse:
-        form.save()
+        suggestion = form.save(commit=False)
+        if self.request.user.is_authenticated:
+            suggestion.user = self.request.user
+        suggestion.save()
         return super().form_valid(form)
 
 
@@ -435,25 +444,38 @@ class LoginVerifyView(FormView):
 
 
 class AccountView(LoginRequiredMixin, TemplateView):
-    """Signed-in user's dashboard: list their subscriptions."""
+    """Signed-in user's dashboard: subscriptions, preferences, and suggestions."""
 
     template_name = "monitor/account.html"
     login_url = "/accounts/login/"
 
     def get_context_data(self, **kwargs) -> dict:
         context = super().get_context_data(**kwargs)
+        user = self.request.user
+        preference, _ = NotificationPreference.objects.get_or_create(user=user)
         context["page_title"] = "Your account"
+        context["notification_preference_form"] = NotificationPreferenceForm(instance=preference)
         context["document_subscriptions"] = (
-            DocumentSubscription.objects.filter(user=self.request.user)
+            DocumentSubscription.objects.filter(user=user)
             .select_related("document__organization")
             .order_by("document__organization__name", "document__document_type")
         )
         context["organization_subscriptions"] = (
-            OrganizationSubscription.objects.filter(user=self.request.user)
+            OrganizationSubscription.objects.filter(user=user)
             .select_related("organization")
             .order_by("organization__name")
         )
+        context["my_suggestions"] = user.suggestions.order_by("-submitted_at", "-pk")[:10]
         return context
+
+    def post(self, request, *args, **kwargs) -> HttpResponse:
+        form = NotificationPreferenceForm(request.POST)
+        if form.is_valid():
+            preference, _ = NotificationPreference.objects.get_or_create(user=request.user)
+            preference.frequency = form.cleaned_data["frequency"]
+            preference.save(update_fields=["frequency", "updated_at"])
+            messages.success(request, "Notification preferences updated.")
+        return redirect("monitor:account")
 
 
 class DocumentSubscribeView(LoginRequiredMixin, View):
@@ -490,6 +512,33 @@ class OrganizationUnsubscribeView(LoginRequiredMixin, View):
             user=request.user, organization_id=kwargs["pk"]
         ).delete()
         return redirect("monitor:organizations")
+
+
+class UnsubscribeTokenView(TemplateView):
+    """
+    One-click unsubscribe for change notifications.
+
+    The signed *token* encodes the (user, document) pair; visiting the link
+    removes the matching document subscription so email clients can unsubscribe
+    without logging in.  Organization-level subscriptions are left untouched.
+    """
+
+    template_name = "monitor/unsubscribe_confirmed.html"
+
+    def get(self, request, *args, **kwargs) -> HttpResponse:
+        try:
+            payload = read_unsubscribe_token(kwargs["token"])
+        except (signing.BadSignature, TypeError, ValueError):
+            raise Http404("Invalid or expired unsubscribe link.") from None
+        DocumentSubscription.objects.filter(
+            user_id=payload["user_id"], document_id=payload["document_id"]
+        ).delete()
+        return super().get(request, *args, **kwargs)
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "You're unsubscribed"
+        return context
 
 
 # ---------------------------------------------------------------------------
@@ -638,7 +687,9 @@ class ManageSuggestionListView(SuperuserRequiredMixin, ListView):
     paginate_by = 50
 
     def get_queryset(self):
-        qs = Suggestion.objects.all().order_by("-submitted_at", "-pk")
+        qs = Suggestion.objects.annotate(
+            is_duplicate=Exists(Organization.objects.filter(website_url=OuterRef("website_url")))
+        ).order_by("-submitted_at", "-pk")
         status = self.request.GET.get("status", Suggestion.Status.PENDING)
         if status:
             qs = qs.filter(status=status)
@@ -671,6 +722,9 @@ class ManageSuggestionReviewView(SuperuserRequiredMixin, FormView):
         context = super().get_context_data(**kwargs)
         context["suggestion"] = self.suggestion
         context["action"] = self.action
+        context["is_duplicate"] = Organization.objects.filter(
+            website_url=self.suggestion.website_url
+        ).exists()
         context["page_title"] = (
             f"Approve suggestion: {self.suggestion.organization_name}"
             if self.action == "approve"
@@ -681,14 +735,22 @@ class ManageSuggestionReviewView(SuperuserRequiredMixin, FormView):
     def form_valid(self, form) -> HttpResponse:
         if self.suggestion.status != Suggestion.Status.PENDING:
             return super().form_valid(form)
+        created_document = None
         if self.action == "approve":
-            self.suggestion.create_organization_and_document()
+            _, created_document = self.suggestion.create_organization_and_document()
             self.suggestion.status = Suggestion.Status.APPROVED
         elif self.action == "reject":
             self.suggestion.status = Suggestion.Status.REJECTED
         self.suggestion.review_notes = form.cleaned_data["review_notes"]
         self.suggestion.reviewed_at = timezone.now()
         self.suggestion.save()
+        send_suggestion_review_email(
+            self.suggestion,
+            approved=self.action == "approve",
+            site_url=settings.BASE_URL,
+            review_notes=self.suggestion.review_notes,
+            document=created_document,
+        )
         return super().form_valid(form)
 
 
@@ -770,9 +832,7 @@ class ManageUserListView(SuperuserRequiredMixin, ListView):
             get_user_model()
             .objects.annotate(
                 document_subscription_count=Count("document_subscriptions", distinct=True),
-                organization_subscription_count=Count(
-                    "organization_subscriptions", distinct=True
-                ),
+                organization_subscription_count=Count("organization_subscriptions", distinct=True),
             )
             .order_by("-is_superuser", "email")
         )

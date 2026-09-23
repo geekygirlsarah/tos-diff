@@ -264,6 +264,14 @@ class Suggestion(models.Model):
         default="",
         help_text="Optional email address if we need to follow up.",
     )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="suggestions",
+        help_text="The logged-in account that submitted this suggestion, if any.",
+    )
     notes = models.TextField(
         blank=True, default="", help_text="Any additional notes about the suggestion."
     )
@@ -360,3 +368,55 @@ class OrganizationSubscription(models.Model):
 
     def __str__(self) -> str:
         return f"{self.user} → {self.organization}"
+
+
+class NotificationPreference(models.Model):
+    """How often a user wants change notification emails."""
+
+    class Frequency(models.TextChoices):
+        IMMEDIATE = "immediate", "Immediate"
+        DAILY = "daily", "Daily digest"
+        WEEKLY = "weekly", "Weekly digest"
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="notification_preference",
+    )
+    frequency = models.CharField(
+        max_length=10,
+        choices=Frequency.choices,
+        default=Frequency.IMMEDIATE,
+        help_text="Send change emails now, or batch them into a daily/weekly digest.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"{self.user} — {self.get_frequency_display()}"
+
+
+class PendingNotification(models.Model):
+    """A change notification queued for a user on the daily/weekly digest."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="pending_notifications",
+    )
+    document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name="+")
+    snapshot = models.ForeignKey(DocumentSnapshot, on_delete=models.CASCADE, related_name="+")
+    old_snapshot = models.ForeignKey(
+        DocumentSnapshot,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.user} → {self.document} ({self.created_at:%Y-%m-%d %H:%M})"

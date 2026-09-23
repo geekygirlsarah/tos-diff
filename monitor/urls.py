@@ -38,6 +38,7 @@ from .views import (
     SuggestDocumentView,
     SuggestionThanksView,
     TermsView,
+    UnsubscribeTokenView,
 )
 
 app_name = "monitor"
@@ -89,6 +90,7 @@ urlpatterns = [
         name="logout",
     ),
     path("accounts/", AccountView.as_view(), name="account"),
+    path("unsubscribe/<str:token>/", UnsubscribeTokenView.as_view(), name="unsubscribe_token"),
     # Superuser management pages
     path("manage/", ManageDashboardView.as_view(), name="manage_dashboard"),
     path(

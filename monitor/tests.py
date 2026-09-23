@@ -22,8 +22,10 @@ from .models import (
     DocumentSubscription,
     Language,
     LoginCode,
+    NotificationPreference,
     Organization,
     OrganizationSubscription,
+    PendingNotification,
     Suggestion,
     Tag,
 )
@@ -40,7 +42,7 @@ from .services import (
     make_unsubscribe_token,
     send_login_code_email,
 )
-from .tasks import send_change_notifications
+from .tasks import send_change_notifications, send_daily_digests, send_weekly_digests
 
 # ---------------------------------------------------------------------------
 # Model tests
@@ -2219,9 +2221,7 @@ class ManageDeleteViewsTest(TestCase):
         self.assertFalse(Document.objects.filter(organization_id=self.org.pk).exists())
 
     def test_delete_document(self):
-        response = self.client.post(
-            reverse("monitor:manage_document_delete", args=[self.doc.pk])
-        )
+        response = self.client.post(reverse("monitor:manage_document_delete", args=[self.doc.pk]))
         self.assertRedirects(response, reverse("monitor:manage_documents"))
         self.assertFalse(Document.objects.filter(pk=self.doc.pk).exists())
 
@@ -2248,9 +2248,7 @@ class ManageDocumentCheckTest(TestCase):
 
     @patch("monitor.views.check_document")
     def test_check_now_enqueues_fetch(self, mock_task):
-        response = self.client.post(
-            reverse("monitor:manage_document_check", args=[self.doc.pk])
-        )
+        response = self.client.post(reverse("monitor:manage_document_check", args=[self.doc.pk]))
         self.assertRedirects(response, reverse("monitor:manage_documents"))
         mock_task.delay.assert_called_once_with(self.doc.pk)
 
@@ -2263,9 +2261,7 @@ class ManageDocumentCheckTest(TestCase):
     def test_check_now_denied_to_regular_user(self):
         get_user_model().objects.create_user(username="bob", email="bob@example.com", password="x")
         self.client.login(username="bob", password="x")
-        response = self.client.post(
-            reverse("monitor:manage_document_check", args=[self.doc.pk])
-        )
+        response = self.client.post(reverse("monitor:manage_document_check", args=[self.doc.pk]))
         self.assertEqual(response.status_code, 403)
 
 
@@ -2287,9 +2283,7 @@ class ManageAttentionViewTest(TestCase):
             last_checked=timezone.now(),
             last_changed=timezone.now(),
         )
-        DocumentSnapshot.objects.create(
-            document=self.ok_doc, cleaned_text="text", text_hash="hash"
-        )
+        DocumentSnapshot.objects.create(document=self.ok_doc, cleaned_text="text", text_hash="hash")
 
     def test_page_renders(self):
         response = self.client.get(reverse("monitor:manage_attention"))
@@ -2372,9 +2366,7 @@ class UnsubscribeTokenViewTest(TestCase):
     def setUp(self):
         self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
         self.doc = Document.objects.create(organization=self.org, url="https://acme.com/tos")
-        self.user = get_user_model().objects.create_user(
-            username="bob", email="bob@example.com"
-        )
+        self.user = get_user_model().objects.create_user(username="bob", email="bob@example.com")
 
     def test_valid_token_removes_document_subscription(self):
         DocumentSubscription.objects.create(user=self.user, document=self.doc)
@@ -2391,9 +2383,7 @@ class UnsubscribeTokenViewTest(TestCase):
         self.assertEqual(response.status_code, 200)
 
     def test_invalid_token_returns_404(self):
-        response = self.client.get(
-            reverse("monitor:unsubscribe_token", args=["not-a-real-token"])
-        )
+        response = self.client.get(reverse("monitor:unsubscribe_token", args=["not-a-real-token"]))
         self.assertEqual(response.status_code, 404)
 
     def test_does_not_remove_organization_subscription(self):
@@ -2481,3 +2471,255 @@ class ManageSuggestionDedupeTest(TestCase):
         response = self.client.get(reverse("monitor:manage_suggestions"))
         suggestion = response.context["suggestions"][0]
         self.assertFalse(suggestion.is_duplicate)
+
+
+# ---------------------------------------------------------------------------
+# Suggestion ownership by account + account notification preferences
+# ---------------------------------------------------------------------------
+
+
+class AccountSuggestionsTest(TestCase):
+    """Suggestions are linked to the logged-in user and listed in their account."""
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="bob", email="bob@example.com")
+        self.client.force_login(self.user)
+
+    def test_account_lists_my_suggestions(self):
+        Suggestion.objects.create(
+            organization_name="Globex",
+            website_url="https://globex.example.com",
+            document_url="https://globex.example.com/tos",
+            user=self.user,
+        )
+        response = self.client.get(reverse("monitor:account"))
+        self.assertContains(response, "Globex")
+
+    def test_account_hides_other_users_suggestions(self):
+        other = get_user_model().objects.create_user(username="carol", email="carol@example.com")
+        Suggestion.objects.create(
+            organization_name="Initech",
+            website_url="https://initech.example.com",
+            document_url="https://initech.example.com/tos",
+            user=other,
+        )
+        response = self.client.get(reverse("monitor:account"))
+        self.assertNotContains(response, "Initech")
+
+    def test_logged_in_suggestion_records_user(self):
+        self.client.post(
+            reverse("monitor:suggest"),
+            {
+                "organization_name": "Acme",
+                "website_url": "https://acme.com",
+                "document_url": "https://acme.com/tos",
+                "document_type": Document.DocumentType.TERMS_OF_SERVICE,
+            },
+        )
+        suggestion = Suggestion.objects.get(organization_name="Acme")
+        self.assertEqual(suggestion.user, self.user)
+
+    def test_anonymous_suggestion_has_no_user(self):
+        self.client.logout()
+        self.client.post(
+            reverse("monitor:suggest"),
+            {
+                "organization_name": "Acme",
+                "website_url": "https://acme.com",
+                "document_url": "https://acme.com/tos",
+                "document_type": Document.DocumentType.TERMS_OF_SERVICE,
+            },
+        )
+        suggestion = Suggestion.objects.get(organization_name="Acme")
+        self.assertIsNone(suggestion.user)
+
+
+class AccountNotificationPreferenceTest(TestCase):
+    """Users can choose immediate, daily, or weekly notifications from their account."""
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="bob", email="bob@example.com")
+        self.client.force_login(self.user)
+
+    def test_updates_frequency_on_post(self):
+        self.client.post(
+            reverse("monitor:account"), {"frequency": NotificationPreference.Frequency.DAILY}
+        )
+        pref = NotificationPreference.objects.get(user=self.user)
+        self.assertEqual(pref.frequency, NotificationPreference.Frequency.DAILY)
+
+    def test_second_post_updates_existing_preference(self):
+        NotificationPreference.objects.create(
+            user=self.user, frequency=NotificationPreference.Frequency.DAILY
+        )
+        self.client.post(
+            reverse("monitor:account"), {"frequency": NotificationPreference.Frequency.WEEKLY}
+        )
+        pref = NotificationPreference.objects.get(user=self.user)
+        self.assertEqual(pref.frequency, NotificationPreference.Frequency.WEEKLY)
+
+    def test_account_shows_preference_form(self):
+        response = self.client.get(reverse("monitor:account"))
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNotNone(response.context["notification_preference_form"])
+        self.assertContains(response, "Save preferences")
+
+
+# ---------------------------------------------------------------------------
+# Email digest system
+# ---------------------------------------------------------------------------
+
+
+class DigestDeliveryTest(TestCase):
+    """send_change_notifications respects the user's delivery preference."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.doc = Document.objects.create(organization=self.org, url="https://acme.com/tos")
+        self.new = DocumentSnapshot.objects.create(
+            document=self.doc, cleaned_text="v2", text_hash="h2"
+        )
+        self.user = get_user_model().objects.create_user(username="bob", email="bob@example.com")
+        self.daily = get_user_model().objects.create_user(username="dana", email="dana@example.com")
+        self.weekly = get_user_model().objects.create_user(
+            username="wally", email="wally@example.com"
+        )
+        NotificationPreference.objects.create(
+            user=self.daily, frequency=NotificationPreference.Frequency.DAILY
+        )
+        NotificationPreference.objects.create(
+            user=self.weekly, frequency=NotificationPreference.Frequency.WEEKLY
+        )
+
+    @patch("monitor.tasks.send_mail")
+    def test_default_user_gets_immediate_email(self, mock_send):
+        DocumentSubscription.objects.create(user=self.user, document=self.doc)
+        result = send_change_notifications(self.doc.pk, self.new.pk)
+        self.assertEqual(result["sent"], 1)
+        self.assertEqual(result["queued"], 0)
+        mock_send.assert_called_once()
+
+    @patch("monitor.tasks.send_mail")
+    def test_daily_user_is_queued_not_emailed(self, mock_send):
+        DocumentSubscription.objects.create(user=self.daily, document=self.doc)
+        result = send_change_notifications(self.doc.pk, self.new.pk)
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(result["queued"], 1)
+        mock_send.assert_not_called()
+        self.assertEqual(
+            PendingNotification.objects.filter(user=self.daily, document=self.doc).count(), 1
+        )
+
+    @patch("monitor.tasks.send_mail")
+    def test_weekly_user_is_queued_not_emailed(self, mock_send):
+        DocumentSubscription.objects.create(user=self.weekly, document=self.doc)
+        result = send_change_notifications(self.doc.pk, self.new.pk)
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(result["queued"], 1)
+        mock_send.assert_not_called()
+
+    def test_pending_notification_records_previous_snapshot(self):
+        old = DocumentSnapshot.objects.create(document=self.doc, cleaned_text="v1", text_hash="h1")
+        DocumentSubscription.objects.create(user=self.daily, document=self.doc)
+        with patch("monitor.tasks.send_mail"):
+            send_change_notifications(self.doc.pk, self.new.pk)
+        pending = PendingNotification.objects.get(user=self.daily, document=self.doc)
+        self.assertEqual(pending.snapshot, self.new)
+        self.assertEqual(pending.old_snapshot, old)
+
+
+class SendDailyDigestTaskTest(TestCase):
+    """The daily digest task emails queued daily subscribers once and clears the queue."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.doc = Document.objects.create(organization=self.org, url="https://acme.com/tos")
+        self.new = DocumentSnapshot.objects.create(
+            document=self.doc, cleaned_text="v2", text_hash="h2"
+        )
+        self.daily = get_user_model().objects.create_user(username="dana", email="dana@example.com")
+        NotificationPreference.objects.create(
+            user=self.daily, frequency=NotificationPreference.Frequency.DAILY
+        )
+        DocumentSubscription.objects.create(user=self.daily, document=self.doc)
+
+    def _queue(self):
+        with patch("monitor.tasks.send_mail"):
+            send_change_notifications(self.doc.pk, self.new.pk)
+
+    def test_digest_sends_one_email_per_user(self):
+        self._queue()
+        with patch("monitor.tasks.send_mail") as mock_send:
+            result = send_daily_digests()
+        self.assertEqual(result["sent"], 1)
+        mock_send.assert_called_once()
+        args = mock_send.call_args[0]
+        self.assertEqual(args[3], ["dana@example.com"])
+        self.assertIn("Acme", args[1])
+
+    def test_digest_clears_pending_notifications(self):
+        self._queue()
+        with patch("monitor.tasks.send_mail"):
+            send_daily_digests()
+        self.assertFalse(PendingNotification.objects.filter(user=self.daily).exists())
+
+    def test_digest_body_links_to_document(self):
+        self._queue()
+        with patch("monitor.tasks.send_mail") as mock_send:
+            send_daily_digests()
+        body = mock_send.call_args[0][1]
+        self.assertIn(f"/document/{self.doc.pk}/", body)
+
+    def test_daily_digest_ignores_weekly_and_immediate_users(self):
+        weekly = get_user_model().objects.create_user(username="wally", email="wally@example.com")
+        NotificationPreference.objects.create(
+            user=weekly, frequency=NotificationPreference.Frequency.WEEKLY
+        )
+        DocumentSubscription.objects.create(user=weekly, document=self.doc)
+        immediate = get_user_model().objects.create_user(username="bob", email="bob@example.com")
+        DocumentSubscription.objects.create(user=immediate, document=self.doc)
+        self._queue()
+        with patch("monitor.tasks.send_mail") as mock_send:
+            result = send_daily_digests()
+        self.assertEqual(result["sent"], 1)
+        mock_send.assert_called_once()
+        self.assertEqual(mock_send.call_args[0][3], ["dana@example.com"])
+        self.assertTrue(PendingNotification.objects.filter(user=weekly).exists())
+        self.assertFalse(PendingNotification.objects.filter(user=immediate).exists())
+
+    def test_no_pending_means_no_email(self):
+        with patch("monitor.tasks.send_mail") as mock_send:
+            result = send_daily_digests()
+        self.assertEqual(result["sent"], 0)
+        mock_send.assert_not_called()
+
+
+class SendWeeklyDigestTaskTest(TestCase):
+    """The weekly digest task emails queued weekly subscribers once."""
+
+    def test_weekly_digest_sends_and_clears(self):
+        org = Organization.objects.create(name="Beta", website_url="https://beta.example.com")
+        doc = Document.objects.create(organization=org, url="https://beta.example.com/tos")
+        new = DocumentSnapshot.objects.create(document=doc, cleaned_text="v2", text_hash="h2")
+        weekly = get_user_model().objects.create_user(username="wally", email="wally@example.com")
+        NotificationPreference.objects.create(
+            user=weekly, frequency=NotificationPreference.Frequency.WEEKLY
+        )
+        DocumentSubscription.objects.create(user=weekly, document=doc)
+        with patch("monitor.tasks.send_mail"):
+            send_change_notifications(doc.pk, new.pk)
+        with patch("monitor.tasks.send_mail") as mock_send:
+            result = send_weekly_digests()
+        self.assertEqual(result["sent"], 1)
+        mock_send.assert_called_once()
+        self.assertEqual(mock_send.call_args[0][3], ["wally@example.com"])
+        self.assertFalse(PendingNotification.objects.filter(user=weekly).exists())
+
+
+class BeatScheduleDigestTest(TestCase):
+    """Beat runs the digest tasks on schedule."""
+
+    def test_beat_schedule_contains_digest_tasks(self):
+        tasks = {entry["task"] for entry in settings.CELERY_BEAT_SCHEDULE.values()}
+        self.assertIn("monitor.tasks.send_daily_digests", tasks)
+        self.assertIn("monitor.tasks.send_weekly_digests", tasks)

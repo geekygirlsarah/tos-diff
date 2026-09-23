@@ -4,7 +4,7 @@ import json
 
 from django import forms
 
-from .models import Document, Organization, Suggestion, Tag
+from .models import Document, NotificationPreference, Organization, Suggestion, Tag
 
 
 class SuggestionForm(forms.ModelForm):
@@ -199,6 +199,17 @@ class DocumentForm(forms.ModelForm):
                     "placeholder": '{"wait_for_selector": ".content"}',
                 }
             ),
+        }
+
+
+class NotificationPreferenceForm(forms.ModelForm):
+    """User-facing form to choose immediate, daily, or weekly change emails."""
+
+    class Meta:
+        model = NotificationPreference
+        fields = ["frequency"]
+        widgets = {
+            "frequency": forms.Select(attrs={"class": "form-select"}),
         }
 
 

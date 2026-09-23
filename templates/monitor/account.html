@@ -127,4 +127,79 @@
     </div>
   {% endif %}
 </section>
+
+<section aria-labelledby="preferences-heading" class="mt-5">
+  <h2 id="preferences-heading" class="h5 mb-3" style="color: var(--td-primary-dark);">
+    Notification preferences
+  </h2>
+  <div class="td-card p-4">
+    <form method="post" action="{% url 'monitor:account' %}" class="row gy-3 gx-3 align-items-end">
+      {% csrf_token %}
+      <div class="col-md-6">
+        <label class="form-label fw-semibold" for="{{ notification_preference_form.frequency.id_for_label }}">
+          {{ notification_preference_form.frequency.label }}
+        </label>
+        {{ notification_preference_form.frequency }}
+        <div class="form-text">
+          "Immediate" sends an email as soon as a document changes.
+          "Daily"/"Weekly" batches changes into one digest email.
+        </div>
+      </div>
+      <div class="col-md-auto">
+        <button type="submit" class="btn td-btn-primary">Save preferences</button>
+      </div>
+    </form>
+  </div>
+</section>
+
+{% if my_suggestions %}
+<section aria-labelledby="my-suggestions-heading" class="mt-5">
+  <div class="d-flex align-items-center gap-2 mb-3">
+    <h2 id="my-suggestions-heading" class="h5 mb-0" style="color: var(--td-primary-dark);">
+      Your suggestions
+    </h2>
+  </div>
+  <div class="td-card">
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead>
+          <tr style="background: var(--td-primary-light);">
+            <th scope="col" class="border-0">Submitted</th>
+            <th scope="col" class="border-0">Organization</th>
+            <th scope="col" class="border-0">Status</th>
+            <th scope="col" class="border-0">Review notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for suggestion in my_suggestions %}
+          <tr>
+            <td class="small" style="color: var(--td-text-muted);">
+              {{ suggestion.submitted_at|date:"Y-m-d H:i" }}
+            </td>
+            <td>
+              {{ suggestion.organization_name }}
+              <div class="small" style="color: var(--td-text-muted);">
+                {{ suggestion.get_document_type_display }}
+              </div>
+            </td>
+            <td>
+              {% if suggestion.status == "approved" %}
+                <span class="td-badge" style="background: #d1fae5; color: #065f46;">Approved</span>
+              {% elif suggestion.status == "rejected" %}
+                <span class="td-badge" style="background: #fee2e2; color: #991b1b;">Rejected</span>
+              {% else %}
+                <span class="td-badge" style="background: #fef3c7; color: #92400e;">Pending</span>
+              {% endif %}
+            </td>
+            <td class="small" style="color: var(--td-text-muted);">
+              {{ suggestion.review_notes|default:"—" }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+{% endif %}
 {% endblock %}
