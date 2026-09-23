@@ -33,18 +33,11 @@ services:
         value: "2"
       - key: GUNICORN_TIMEOUT
         value: "120"
-
-databases:
-  - name: tosdiff-db
-    plan: starter
-    databaseName: tosdiff
-    user: tosdiff
-
-cronJobs:
-  - name: fetch-documents
+  - type: cron
+    name: fetch-documents
     runtime: image
     image:
-      url: https://github.com/<your-org>/TosDiff-New.git  # ← same repo
+      url: https://github.com/geekygirlsarah/TosDiff-New.git  # ← same repo
     plan: starter
     schedule: "0 2 * * *"  # 02:00 UTC daily
     startCommand: manage fetch_documents
@@ -61,3 +54,9 @@ cronJobs:
           property: connectionString
       - key: DJANGO_ALLOWED_HOSTS
         value: "*"
+
+databases:
+  - name: tosdiff-db
+    plan: starter
+    databaseName: tosdiff
+    user: tosdiff
