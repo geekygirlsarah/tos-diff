@@ -30,7 +30,7 @@
 
 ```
 TosDiff-New/
-├── tosdiff_new/          # Django project package
+├── tosdiff/          # Django project package
 │   ├── settings.py       # All config; secrets via env vars
 │   ├── celery.py         # Celery app instance
 │   ├── urls.py           # Root URL conf

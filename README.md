@@ -48,7 +48,7 @@ A Django application that monitors changes to Terms of Service and Privacy Polic
 ## Project Structure
 
 ```
-tosdiff_new/        # Django project package (settings, urls, celery)
+tosdiff/            # Django project package (settings, urls, celery)
 monitor/            # Main app — models, views, services, tasks, admin
   management/
     commands/       # fetch_documents management command
@@ -169,10 +169,10 @@ python manage.py migrate
 
 ```bash
 # Worker (in a separate terminal)
-celery -A tosdiff_new worker -l info
+celery -A tosdiff worker -l info
 
 # Beat scheduler (in another terminal)
-celery -A tosdiff_new beat -l info
+celery -A tosdiff beat -l info
 ```
 
 ---

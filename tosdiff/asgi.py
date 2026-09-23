@@ -1,5 +1,5 @@
 """
-ASGI config for tosdiff_new project.
+ASGI config for tosdiff project.
 
 It exposes the ASGI callable as a module-level variable named ``application``.
 
@@ -11,6 +11,6 @@ import os
 
 from django.core.asgi import get_asgi_application
 
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "tosdiff_new.settings")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "tosdiff.settings")
 
 application = get_asgi_application()

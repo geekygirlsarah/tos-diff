@@ -26,8 +26,8 @@ omit = [
     "*/migrations/*",
     "*/venv/*",
     "manage.py",
-    "tosdiff_new/wsgi.py",
-    "tosdiff_new/asgi.py",
+    "tosdiff/wsgi.py",
+    "tosdiff/asgi.py",
 ]
 
 [tool.coverage.report]

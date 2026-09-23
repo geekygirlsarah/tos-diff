@@ -26,7 +26,7 @@ case "$1" in
         echo "Running migrations..."
         python manage.py migrate --noinput
         echo "Starting Gunicorn..."
-        exec gunicorn tosdiff_new.wsgi:application \
+        exec gunicorn tosdiff.wsgi:application \
             --bind 0.0.0.0:8000 \
             --workers "${GUNICORN_WORKERS:-3}" \
             --timeout "${GUNICORN_TIMEOUT:-120}" \
@@ -35,16 +35,16 @@ case "$1" in
         ;;
     worker)
         echo "Starting Celery worker..."
-        exec celery -A tosdiff_new worker \
+        exec celery -A tosdiff worker \
             --loglevel="${CELERY_LOG_LEVEL:-info}" \
             --concurrency="${CELERY_CONCURRENCY:-2}"
         ;;
     beat)
         echo "Starting Celery Beat scheduler..."
-        exec celery -A tosdiff_new beat \
+exec celery -A tosdiff beat \
             --loglevel="${CELERY_LOG_LEVEL:-info}" \
             --scheduler django_celery_beat.schedulers:DatabaseScheduler 2>/dev/null \
-            || exec celery -A tosdiff_new beat \
+            || exec celery -A tosdiff beat \
                 --loglevel="${CELERY_LOG_LEVEL:-info}"
         ;;
     manage)

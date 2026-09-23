@@ -33,12 +33,12 @@ jobs:
 
       - name: Run migrations check
         env:
-          DJANGO_SETTINGS_MODULE: tosdiff_new.settings
+          DJANGO_SETTINGS_MODULE: tosdiff.settings
         run: python manage.py migrate --run-syncdb
 
       - name: Run tests with coverage
         env:
-          DJANGO_SETTINGS_MODULE: tosdiff_new.settings
+          DJANGO_SETTINGS_MODULE: tosdiff.settings
         run: |
           coverage run manage.py test monitor --verbosity=2
           coverage report --fail-under=80

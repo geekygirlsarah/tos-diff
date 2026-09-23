@@ -1,8 +1,8 @@
 """
 Celery tasks for document fetching.
 
-Workers:  celery -A tosdiff_new worker -l info
-Beat:     celery -A tosdiff_new beat -l info
+Workers:  celery -A tosdiff worker -l info
+Beat:     celery -A tosdiff beat -l info
 """
 
 import logging
