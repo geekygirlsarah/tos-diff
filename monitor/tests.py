@@ -611,6 +611,55 @@ class PlaywrightBrowserReuseTest(TestCase):
             self.assertIn(flag, kwargs["args"])
 
 
+class PlaywrightResourceBlockingTest(TestCase):
+    """Heavy resource types (images/media/fonts) are aborted to save memory."""
+
+    def setUp(self):
+        from monitor import services
+
+        services._playwright_browser = None
+        services._playwright_instance = None
+
+    @patch("monitor.services._rate_limit")
+    @patch("playwright.sync_api.sync_playwright")
+    def test_route_handler_registered_on_context(self, mock_sync, mock_rate):  # noqa: ARG002
+        browser = MagicMock()
+        browser.is_connected.return_value = True
+        page = MagicMock()
+        page.content.return_value = "<html><body><p>Terms</p></body></html>"
+        context = MagicMock()
+        context.new_page.return_value = page
+        browser.new_context.return_value = context
+        pw = MagicMock()
+        pw.chromium.launch.return_value = browser
+        mock_sync.return_value.__enter__.return_value = pw
+
+        from monitor.services import _block_heavy_resources, fetch_html_playwright
+
+        fetch_html_playwright("https://example.com/tos")
+
+        context.route.assert_called_once_with("**/*", _block_heavy_resources)
+
+    def test_blocks_image_media_and_font_requests(self):
+        from monitor.services import _block_heavy_resources
+
+        for resource_type in ("image", "media", "font"):
+            route = MagicMock()
+            route.request.resource_type = resource_type
+            _block_heavy_resources(route)
+            route.abort.assert_called_once()
+            route.continue_.assert_not_called()
+
+    def test_allows_other_request_types(self):
+        from monitor.services import _block_heavy_resources
+
+        route = MagicMock()
+        route.request.resource_type = "script"
+        _block_heavy_resources(route)
+        route.continue_.assert_called_once()
+        route.abort.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # PDF support tests
 # ---------------------------------------------------------------------------

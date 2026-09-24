@@ -122,6 +122,20 @@ _playwright_worker: threading.Thread | None = None
 _playwright_queue: queue.Queue | None = None
 
 
+# Resource types that never contribute to the extracted text but load
+# full-resolution content into the renderer.  Aborting them keeps peak
+# memory low while JS-heavy pages still render their markup.
+_BLOCKED_RESOURCE_TYPES = ("image", "media", "font")
+
+
+def _block_heavy_resources(route: Any) -> None:
+    """Abort image/media/font requests; allow everything else through."""
+    if route.request.resource_type in _BLOCKED_RESOURCE_TYPES:
+        route.abort()
+    else:
+        route.continue_()
+
+
 def _get_playwright_browser() -> Any:
     """Return the shared, lazily-initialised Playwright Chromium browser.
 
@@ -280,6 +294,7 @@ def fetch_html_playwright(
             java_script_enabled=True,
         )
         try:
+            context.route("**/*", _block_heavy_resources)
             page = context.new_page()
             page.goto(url, wait_until="networkidle", timeout=timeout * 1000)
 
