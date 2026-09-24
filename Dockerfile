@@ -20,10 +20,12 @@ RUN pip install --upgrade pip && \
         requests>=2.32 \
         beautifulsoup4>=4.12 \
         "lxml>=5.0" \
+        "pdfplumber>=0.11" \
         "psycopg[binary]>=3.1" \
         "celery>=5.3" \
         "redis>=5.0" \
-        "gunicorn>=22.0"
+        "gunicorn>=22.0" \
+        "playwright>=1.40"
 
 # Copy project source
 COPY . .
