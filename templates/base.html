@@ -54,6 +54,29 @@
     .td-footer a:hover {
       color: var(--td-primary-dark);
     }
+    .footer-support {
+      border-bottom: 1px solid var(--td-border);
+    }
+    .td-support-btn {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.3rem 0.9rem;
+      border: 1px solid var(--td-border);
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--td-text-muted);
+      background: #fff;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: all 0.15s ease;
+    }
+    .td-support-btn:hover,
+    .td-support-btn:focus {
+      border-color: var(--td-primary);
+      color: var(--td-primary);
+      background: var(--td-primary-light);
+    }
     .td-hero {
       background: linear-gradient(135deg, var(--td-primary-light) 0%, #f0f7ff 100%);
       border: 1px solid var(--td-border);
@@ -237,6 +260,23 @@
 
   <footer class="td-footer py-4 mt-5">
     <div class="container">
+      {% if sponsor_github_url or sponsor_kofi_url %}
+      <div class="footer-support mb-3 pb-3 d-flex flex-wrap align-items-center gap-2">
+        <span class="small" style="color: var(--td-text-muted);">
+          Support TosDiff &mdash; it's free and open source. If it is useful and informative, consider a small donation:
+        </span>
+        {% if sponsor_github_url %}
+        <a class="td-support-btn" href="{{ sponsor_github_url }}" target="_blank" rel="noopener noreferrer">
+          GitHub Sponsors
+        </a>
+        {% endif %}
+        {% if sponsor_kofi_url %}
+        <a class="td-support-btn" href="{{ sponsor_kofi_url }}" target="_blank" rel="noopener noreferrer">
+          Ko-Fi
+        </a>
+        {% endif %}
+      </div>
+      {% endif %}
       <div class="row gy-2 align-items-center">
         <div class="col-md-6 small">
           <strong>TosDiff</strong> &mdash; open-source legal document change tracker.<br>

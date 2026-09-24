@@ -1662,6 +1662,30 @@ class AboutViewTest(TestCase):
         self.assertContains(response, "About")
 
 
+class SponsorLinksFooterTest(TestCase):
+    def test_support_section_hidden_by_default(self):
+        response = self.client.get(reverse("monitor:home"))
+        self.assertNotContains(response, "Support TosDiff")
+        self.assertNotContains(response, "github.com/sponsors")
+        self.assertNotContains(response, "ko-fi.com")
+
+    @override_settings(SPONSOR_GITHUB_URL="https://github.com/sponsors/example")
+    def test_github_sponsors_link_rendered_when_configured(self):
+        response = self.client.get(reverse("monitor:home"))
+        self.assertContains(response, "https://github.com/sponsors/example")
+
+    @override_settings(SPONSOR_KOFI_URL="https://ko-fi.com/tosdiff")
+    def test_kofi_link_rendered_when_configured(self):
+        response = self.client.get(reverse("monitor:home"))
+        self.assertContains(response, "https://ko-fi.com/tosdiff")
+
+    @override_settings(SPONSOR_GITHUB_URL="https://github.com/sponsors/example")
+    def test_only_configured_links_rendered(self):
+        response = self.client.get(reverse("monitor:home"))
+        self.assertContains(response, "https://github.com/sponsors/example")
+        self.assertNotContains(response, "ko-fi.com")
+
+
 class TermsViewTest(TestCase):
     def test_returns_200(self):
         self.assertEqual(self.client.get(reverse("monitor:terms")).status_code, 200)

@@ -91,6 +91,7 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
+                "monitor.context_processors.sponsor_links",
             ],
         },
     },
@@ -243,6 +244,11 @@ SERVER_EMAIL = os.environ.get("SERVER_EMAIL", "TosDiff Admin <admin@tosdiff.loca
 
 # Absolute base URL used when building links in emails sent from Celery tasks.
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000")
+
+# Funding links shown in the site footer ("Support TosDiff" buttons). Leave
+# empty to hide the section entirely (e.g. local dev or once costs are covered).
+SPONSOR_GITHUB_URL = os.environ.get("SPONSOR_GITHUB_URL", "")
+SPONSOR_KOFI_URL = os.environ.get("SPONSOR_KOFI_URL", "")
 
 
 # ---------------------------------------------------------------------------

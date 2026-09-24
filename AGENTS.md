@@ -203,7 +203,8 @@ Conventions:
 - The homepage (`monitor/home.html`) supports two query params: `days` (3, 7, 14, 30) and `type` (a valid `Document.DocumentType` value). Invalid values fall back to defaults. The distinct types present in the current time-window are passed as `document_types` in the view context. Snapshots are grouped into `day_groups` (day → organization → snapshots), ordered by day (newest first), then organization name (A–Z); `RecentChangesView` in `monitor/views.py` builds this structure and shows dates only (no timestamps). Its hero shows `total_organizations` / `total_documents` stats in a two-column layout.
 - The organizations page (`monitor/organizations.html`) shows a hero banner with `total_organizations` / `total_documents` stats plus per-organization cards; `OrganizationsView` provides those counts in context. Both pages share the `_tracked_organizations()` helper in `monitor/views.py` for the org count.
 - Organization favicons render next to org names using `Organization.favicon_url` (DuckDuckGo's icon service) with lazy loading and a hidden fallback on error.
-- Shared UI styling lives in `templates/base.html` as CSS custom properties under the `--td-*` variables (blues/greens palette). Custom classes are prefixed `td-` (e.g. `td-card`, `td-chip`, `td-badge`, `td-card-row`).
+- Shared UI styling lives in `templates/base.html` as CSS custom properties under the `--td-*` variables (blues/greens palette). Custom classes are prefixed `td-` (e.g. `td-card`, `td-chip`, `td-badge`, `td-card-row`, `td-support-btn`).
+- The footer (`templates/base.html`) renders a "Support TosDiff" line with GitHub Sponsors and Ko-Fi pill buttons when `SPONSOR_GITHUB_URL` / `SPONSOR_KOFI_URL` are set. A context processor (`monitor/context_processors.py`) exposes those settings to every template, and the whole section stays hidden when neither URL is configured (so local dev and future funded states render nothing).
 
 ---
 
@@ -283,6 +284,8 @@ All three jobs must pass before merging.
 All secrets and connection strings are read from environment variables. See `.env.example` for the full list. **Never commit `.env` files.**
 
 When `DATABASE_URL` is set it takes precedence over `DB_ENGINE`; its query params (e.g. `?sslmode=require` for Render Postgres) are forwarded verbatim into `DATABASES["default"]["OPTIONS"]` via `database_config_from_url()` in `tosdiff/settings.py`.
+
+`SPONSOR_GITHUB_URL` and `SPONSOR_KOFI_URL` drive the footer's support buttons (see UI & Templates above). Leave both empty to hide the section.
 
 ---
 

@@ -198,6 +198,8 @@ All variables are read from the environment (or `.env` when using Docker Compose
 | `CELERY_LOG_LEVEL` | `info` | Celery log level |
 | `CELERY_CONCURRENCY` | `2` | Celery worker concurrency |
 | `WEB_PORT` | `8000` | Host port mapped to the web container |
+| `SPONSOR_GITHUB_URL` | _(empty)_ | GitHub Sponsors link for the footer's "Support TosDiff" buttons (hidden when empty) |
+| `SPONSOR_KOFI_URL` | _(empty)_ | Ko-Fi link for the footer's "Support TosDiff" buttons (hidden when empty) |
 
 ---
 
