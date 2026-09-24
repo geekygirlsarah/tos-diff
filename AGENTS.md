@@ -170,8 +170,8 @@ Conventions:
 
 ## Email Delivery & Subscription Preferences
 
-- Change notification emails (`build_snapshot_change_message` in `services.py`) include an absolute one-click unsubscribe link signed with `make_unsubscribe_token()` (`services.py`). `UnsubscribeTokenView` (`/unsubscribe/<token>/`) removes the matching `DocumentSubscription` without login (invalid/expired tokens → 404); organization subscriptions are untouched.
-- `NotificationPreference` (OneToOne with user, `frequency` in immediate/daily/weekly) controls delivery. `send_change_notifications` emails immediately by default, otherwise queues a `PendingNotification`. `send_daily_digests` / `send_weekly_digests` (Celery tasks, wired into `CELERY_BEAT_SCHEDULE` in `settings.py`) send one digest email per user with links + unsubscribe per document, then clear that user's queue. The account page (`monitor/account.html`) edits the preference and lists `my_suggestions`.
+- Change notification emails (the daily/weekly digests) include an absolute one-click unsubscribe link per document, signed with `make_unsubscribe_token()` (`services.py`). `UnsubscribeTokenView` (`/unsubscribe/<token>/`) removes the matching `DocumentSubscription` without login (invalid/expired tokens → 404); organization subscriptions are untouched.
+- `NotificationPreference` (OneToOne with user, `frequency` in daily/weekly, default daily) controls delivery. `send_change_notifications` queues a `PendingNotification` for every subscriber (no immediate emails). `send_daily_digests` / `send_weekly_digests` (Celery tasks, wired into `CELERY_BEAT_SCHEDULE` in `settings.py`) send one digest email per user with links + unsubscribe per document, then clear that user's queue. The account page (`monitor/account.html`) edits the preference and lists `my_suggestions`.
 - `Suggestion.user` (nullable FK, `SET_NULL`) records the logged-in submitter; anonymous submissions leave it null.
 
 ## UI & Templates
@@ -246,8 +246,8 @@ All three jobs must pass before merging.
 - `create_organization_and_document()` — idempotent get_or_create of an `Organization` + `Document`
 
 ### `NotificationPreference`
-- OneToOne with user; `frequency` in `TextChoices` (immediate/daily/weekly), defaults to immediate
-- Absence of a row means immediate delivery (so task behavior stays compatible)
+- OneToOne with user; `frequency` in `TextChoices` (daily/weekly), defaults to daily
+- Absence of a row means daily delivery, so `send_change_notifications` always queues a `PendingNotification` and `send_daily_digests` catches users without a preference row
 
 ### `PendingNotification`
 - Queued change notification for digest users: `user`, `document`, `snapshot`, `old_snapshot` (nullable), `created_at`

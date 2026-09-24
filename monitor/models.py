@@ -374,7 +374,6 @@ class NotificationPreference(models.Model):
     """How often a user wants change notification emails."""
 
     class Frequency(models.TextChoices):
-        IMMEDIATE = "immediate", "Immediate"
         DAILY = "daily", "Daily digest"
         WEEKLY = "weekly", "Weekly digest"
 
@@ -386,8 +385,8 @@ class NotificationPreference(models.Model):
     frequency = models.CharField(
         max_length=10,
         choices=Frequency.choices,
-        default=Frequency.IMMEDIATE,
-        help_text="Send change emails now, or batch them into a daily/weekly digest.",
+        default=Frequency.DAILY,
+        help_text="Batch change emails into a daily or weekly digest.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

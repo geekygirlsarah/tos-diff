@@ -15,6 +15,7 @@ from celery.signals import worker_shutdown
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.mail import send_mail
+from django.db.models import Q
 from django.urls import reverse
 
 from .models import (
@@ -26,7 +27,6 @@ from .models import (
     PendingNotification,
 )
 from .services import (
-    build_snapshot_change_message,
     close_playwright_browser,
     fetch_and_snapshot,
     make_unsubscribe_token,
@@ -142,12 +142,13 @@ def _dispatch_change_notifications(document: Document, snapshot: DocumentSnapsho
 @shared_task(name="monitor.tasks.send_change_notifications")
 def send_change_notifications(document_id: int, new_snapshot_id: int) -> dict:
     """
-    Notify every subscriber of *document_id* about the new snapshot.
+    Queue a change notification for every subscriber of *document_id*.
 
     A user is notified if they subscribe to the document directly or to the
     document's organization. Each user receives at most one notification.
-    Preference ``immediate`` (the default) emails them now; ``daily``/``weekly``
-    queue a ``PendingNotification`` for the digest task instead.
+    Subscribers are delivered the update via their daily or weekly digest
+    (a missing preference is treated as daily), so the change is only queued
+    here rather than emailed directly.
 
     Returns ``{"sent": ..., "queued": ..., "error": ...}``.
     """
@@ -183,64 +184,35 @@ def send_change_notifications(document_id: int, new_snapshot_id: int) -> dict:
     if not recipients:
         return {"sent": 0, "queued": 0, "error": None}
 
-    frequencies = dict(
-        NotificationPreference.objects.filter(user_id__in=user_ids).values_list(
-            "user_id", "frequency"
-        )
-    )
-
-    sent = 0
     queued = 0
     for user in recipients:
-        if frequencies.get(user.pk, NotificationPreference.Frequency.IMMEDIATE) == (
-            NotificationPreference.Frequency.IMMEDIATE
-        ):
-            unsubscribe_url = settings.BASE_URL.rstrip("/") + reverse(
-                "monitor:unsubscribe_token",
-                args=[make_unsubscribe_token(user.pk, document.pk)],
-            )
-            subject, plain_body, html_body = build_snapshot_change_message(
-                document, snapshot, old_snapshot, settings.BASE_URL, unsubscribe_url
-            )
-            send_mail(
-                subject,
-                plain_body,
-                settings.DEFAULT_FROM_EMAIL,
-                [user.email],
-                html_message=html_body,
-            )
-            sent += 1
-        else:
-            PendingNotification.objects.create(
-                user=user,
-                document=document,
-                snapshot=snapshot,
-                old_snapshot=old_snapshot,
-            )
-            queued += 1
+        PendingNotification.objects.create(
+            user=user,
+            document=document,
+            snapshot=snapshot,
+            old_snapshot=old_snapshot,
+        )
+        queued += 1
 
     logger.info(
-        "send_change_notifications: sent %d / queued %d notification(s) for document %s",
-        sent,
+        "send_change_notifications: queued %d notification(s) for document %s",
         queued,
         document_id,
     )
-    return {"sent": sent, "queued": queued, "error": None}
+    return {"sent": 0, "queued": queued, "error": None}
 
 
 def _send_digest(frequency: str, digest_label: str) -> dict:
     """
     Email one digest to each user whose preference is *frequency* with any
     pending notifications, then clear their queue.
+
+    Users without a ``NotificationPreference`` row are treated as daily.
     """
-    users = (
-        get_user_model()
-        .objects.filter(
-            notification_preference__frequency=frequency,
-            is_active=True,
-        )
-        .exclude(email="")
-    )
+    pref_q = Q(notification_preference__frequency=frequency)
+    if frequency == NotificationPreference.Frequency.DAILY:
+        pref_q |= Q(notification_preference__isnull=True)
+    users = get_user_model().objects.filter(pref_q, is_active=True).exclude(email="")
     sent = 0
     base = settings.BASE_URL.rstrip("/")
     for user in users:

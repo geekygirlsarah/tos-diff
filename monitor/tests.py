@@ -31,7 +31,6 @@ from .models import (
     Tag,
 )
 from .services import (
-    build_snapshot_change_message,
     clean_html,
     compute_hash,
     create_snapshot_if_changed,
@@ -1521,39 +1520,6 @@ class SendLoginCodeEmailTest(TestCase):
         self.assertIn("123456", email.body)
 
 
-class BuildSnapshotChangeMessageTest(TestCase):
-    def setUp(self):
-        org = Organization.objects.create(name="Acme", website_url="https://acme.com")
-        self.doc = Document.objects.create(organization=org, url="https://acme.com/tos")
-        self.old = DocumentSnapshot.objects.create(
-            document=self.doc, cleaned_text="Version 1", text_hash=compute_hash("v1")
-        )
-        self.new = DocumentSnapshot.objects.create(
-            document=self.doc, cleaned_text="Version 2", text_hash=compute_hash("v2")
-        )
-        self.site_url = "http://localhost:8000"
-
-    def test_subject_mentions_org_and_document(self):
-        subject, _, _ = build_snapshot_change_message(self.doc, self.new, self.old, self.site_url)
-        self.assertIn("Acme", subject)
-        self.assertIn("Terms of Service", subject)
-
-    def test_plain_body_contains_detail_and_diff_links(self):
-        _, plain, _ = build_snapshot_change_message(self.doc, self.new, self.old, self.site_url)
-        self.assertIn(f"{self.site_url}/document/{self.doc.pk}/", plain)
-        self.assertIn(f"/diff/{self.old.pk}/{self.new.pk}/", plain)
-
-    def test_html_body_contains_anchors(self):
-        _, _, html = build_snapshot_change_message(self.doc, self.new, self.old, self.site_url)
-        self.assertIn('<a href="', html)
-        self.assertIn(f"/document/{self.doc.pk}/", html)
-
-    def test_works_without_previous_snapshot(self):
-        _, plain, _ = build_snapshot_change_message(self.doc, self.new, None, self.site_url)
-        self.assertIn("View the document", plain)
-        self.assertNotIn("/diff/", plain)
-
-
 # ---------------------------------------------------------------------------
 # Suggestion view tests
 # ---------------------------------------------------------------------------
@@ -1861,52 +1827,53 @@ class SendChangeNotificationsTaskTest(TestCase):
         )
 
     @patch("monitor.tasks.send_mail")
-    def test_sends_email_to_document_subscribers(self, mock_send):
+    def test_queues_change_for_document_subscribers(self, mock_send):
         DocumentSubscription.objects.create(user=self.user, document=self.doc)
         result = send_change_notifications(self.doc.pk, self.new.pk)
-        self.assertEqual(result["sent"], 1)
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(result["queued"], 1)
         self.assertIsNone(result["error"])
-        recipients = mock_send.call_args[0][3]
-        self.assertEqual(recipients, ["bob@example.com"])
+        mock_send.assert_not_called()
+        self.assertEqual(
+            PendingNotification.objects.filter(user=self.user, document=self.doc).count(), 1
+        )
 
     @patch("monitor.tasks.send_mail")
-    def test_sends_email_to_organization_subscribers(self, mock_send):
+    def test_queues_change_for_organization_subscribers(self, mock_send):
         OrganizationSubscription.objects.create(user=self.user, organization=self.org)
         result = send_change_notifications(self.doc.pk, self.new.pk)
-        self.assertEqual(result["sent"], 1)
-        recipients = mock_send.call_args[0][3]
-        self.assertEqual(recipients, ["bob@example.com"])
+        self.assertEqual(result["queued"], 1)
+        mock_send.assert_not_called()
 
     @patch("monitor.tasks.send_mail")
     def test_deduplicates_users_subscribed_at_both_levels(self, mock_send):
         DocumentSubscription.objects.create(user=self.user, document=self.doc)
         OrganizationSubscription.objects.create(user=self.user, organization=self.org)
         result = send_change_notifications(self.doc.pk, self.new.pk)
-        self.assertEqual(result["sent"], 1)
-        self.assertEqual(mock_send.call_count, 1)
+        self.assertEqual(result["queued"], 1)
+        mock_send.assert_not_called()
 
     @patch("monitor.tasks.send_mail")
     def test_skips_inactive_users(self, mock_send):
         DocumentSubscription.objects.create(user=self.inactive_user, document=self.doc)
         result = send_change_notifications(self.doc.pk, self.new.pk)
-        self.assertEqual(result["sent"], 0)
-        mock_send.assert_not_called()
+        self.assertEqual(result["queued"], 0)
+        self.assertFalse(PendingNotification.objects.exists())
 
     @patch("monitor.tasks.send_mail")
-    def test_no_subscribers_no_email_sent(self, mock_send):
+    def test_no_subscribers_no_notification(self, mock_send):
         result = send_change_notifications(self.doc.pk, self.new.pk)
         self.assertEqual(result["sent"], 0)
+        self.assertEqual(result["queued"], 0)
         mock_send.assert_not_called()
 
-    @patch("monitor.tasks.send_mail")
-    def test_email_contains_change_link(self, mock_send):
+    def test_pending_records_previous_snapshot_for_diff(self):
         DocumentSubscription.objects.create(user=self.user, document=self.doc)
-        send_change_notifications(self.doc.pk, self.new.pk)
-        subject = mock_send.call_args[0][0]
-        body = mock_send.call_args[0][1]
-        self.assertIn("Acme", subject)
-        self.assertIn(f"/document/{self.doc.pk}/", body)
-        self.assertIn(f"/diff/{self.old.pk}/{self.new.pk}/", body)
+        with patch("monitor.tasks.send_mail"):
+            send_change_notifications(self.doc.pk, self.new.pk)
+        pending = PendingNotification.objects.get(user=self.user, document=self.doc)
+        self.assertEqual(pending.snapshot, self.new)
+        self.assertEqual(pending.old_snapshot, self.old)
 
     def test_missing_document_returns_error(self):
         result = send_change_notifications(99999, self.new.pk)
@@ -2381,34 +2348,6 @@ class ManageUserListViewTest(TestCase):
         self.assertEqual(user_row.organization_subscription_count, 1)
 
 
-class ChangeMessageUnsubscribeLinkTest(TestCase):
-    """Change notification emails include a per-user unsubscribe link."""
-
-    def setUp(self):
-        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
-        self.doc = Document.objects.create(organization=self.org, url="https://acme.com/tos")
-        self.old = DocumentSnapshot.objects.create(
-            document=self.doc, cleaned_text="v1", text_hash="h1"
-        )
-        self.new = DocumentSnapshot.objects.create(
-            document=self.doc, cleaned_text="v2", text_hash="h2"
-        )
-
-    def test_message_includes_unsubscribe_link(self):
-        subject, plain, html = build_snapshot_change_message(
-            self.doc, self.new, self.old, "https://example.com", "https://example.com/unsub/abc"
-        )
-        self.assertIn("Unsubscribe", plain)
-        self.assertIn("https://example.com/unsub/abc", plain)
-        self.assertIn('href="https://example.com/unsub/abc"', html)
-
-    def test_no_unsubscribe_link_when_omitted(self):
-        subject, plain, html = build_snapshot_change_message(
-            self.doc, self.new, self.old, "https://example.com"
-        )
-        self.assertNotIn("Unsubscribe", plain)
-
-
 class UnsubscribeTokenViewTest(TestCase):
     """A signed unsubscribe link removes a document subscription without logging in."""
 
@@ -2584,11 +2523,24 @@ class AccountSuggestionsTest(TestCase):
 
 
 class AccountNotificationPreferenceTest(TestCase):
-    """Users can choose immediate, daily, or weekly notifications from their account."""
+    """Users choose daily or weekly digest notifications from their account."""
 
     def setUp(self):
         self.user = get_user_model().objects.create_user(username="bob", email="bob@example.com")
         self.client.force_login(self.user)
+
+    def test_new_preference_defaults_to_daily(self):
+        NotificationPreference.objects.create(user=self.user)
+        pref = NotificationPreference.objects.get(user=self.user)
+        self.assertEqual(pref.frequency, NotificationPreference.Frequency.DAILY)
+
+    def test_account_form_excludes_immediate(self):
+        response = self.client.get(reverse("monitor:account"))
+        form = response.context["notification_preference_form"]
+        self.assertEqual(
+            [value for value, _ in form.fields["frequency"].choices],
+            [NotificationPreference.Frequency.DAILY, NotificationPreference.Frequency.WEEKLY],
+        )
 
     def test_updates_frequency_on_post(self):
         self.client.post(
@@ -2620,7 +2572,7 @@ class AccountNotificationPreferenceTest(TestCase):
 
 
 class DigestDeliveryTest(TestCase):
-    """send_change_notifications respects the user's delivery preference."""
+    """send_change_notifications queues a change for every subscriber."""
 
     def setUp(self):
         self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
@@ -2641,12 +2593,22 @@ class DigestDeliveryTest(TestCase):
         )
 
     @patch("monitor.tasks.send_mail")
-    def test_default_user_gets_immediate_email(self, mock_send):
+    def test_change_queues_every_subscriber_and_emails_nobody(self, mock_send):
+        DocumentSubscription.objects.create(user=self.user, document=self.doc)
+        DocumentSubscription.objects.create(user=self.daily, document=self.doc)
+        DocumentSubscription.objects.create(user=self.weekly, document=self.doc)
+        result = send_change_notifications(self.doc.pk, self.new.pk)
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(result["queued"], 3)
+        mock_send.assert_not_called()
+
+    @patch("monitor.tasks.send_mail")
+    def test_user_without_preference_is_queued(self, mock_send):
         DocumentSubscription.objects.create(user=self.user, document=self.doc)
         result = send_change_notifications(self.doc.pk, self.new.pk)
-        self.assertEqual(result["sent"], 1)
-        self.assertEqual(result["queued"], 0)
-        mock_send.assert_called_once()
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(result["queued"], 1)
+        mock_send.assert_not_called()
 
     @patch("monitor.tasks.send_mail")
     def test_daily_user_is_queued_not_emailed(self, mock_send):
@@ -2719,14 +2681,12 @@ class SendDailyDigestTaskTest(TestCase):
         body = mock_send.call_args[0][1]
         self.assertIn(f"/document/{self.doc.pk}/", body)
 
-    def test_daily_digest_ignores_weekly_and_immediate_users(self):
+    def test_daily_digest_ignores_weekly_users(self):
         weekly = get_user_model().objects.create_user(username="wally", email="wally@example.com")
         NotificationPreference.objects.create(
             user=weekly, frequency=NotificationPreference.Frequency.WEEKLY
         )
         DocumentSubscription.objects.create(user=weekly, document=self.doc)
-        immediate = get_user_model().objects.create_user(username="bob", email="bob@example.com")
-        DocumentSubscription.objects.create(user=immediate, document=self.doc)
         self._queue()
         with patch("monitor.tasks.send_mail") as mock_send:
             result = send_daily_digests()
@@ -2734,7 +2694,16 @@ class SendDailyDigestTaskTest(TestCase):
         mock_send.assert_called_once()
         self.assertEqual(mock_send.call_args[0][3], ["dana@example.com"])
         self.assertTrue(PendingNotification.objects.filter(user=weekly).exists())
-        self.assertFalse(PendingNotification.objects.filter(user=immediate).exists())
+
+    def test_daily_digest_includes_users_without_preference(self):
+        bob = get_user_model().objects.create_user(username="bob", email="bob@example.com")
+        DocumentSubscription.objects.create(user=bob, document=self.doc)
+        self._queue()
+        with patch("monitor.tasks.send_mail") as mock_send:
+            result = send_daily_digests()
+        self.assertEqual(result["sent"], 2)
+        sent_to = [recipient for call in mock_send.call_args_list for recipient in call.args[3]]
+        self.assertCountEqual(sent_to, ["bob@example.com", "dana@example.com"])
 
     def test_no_pending_means_no_email(self):
         with patch("monitor.tasks.send_mail") as mock_send:

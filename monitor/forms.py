@@ -203,7 +203,7 @@ class DocumentForm(forms.ModelForm):
 
 
 class NotificationPreferenceForm(forms.ModelForm):
-    """User-facing form to choose immediate, daily, or weekly change emails."""
+    """User-facing form to choose a daily or weekly change-email digest."""
 
     class Meta:
         model = NotificationPreference
