@@ -15,6 +15,7 @@ services:
     repo: https://github.com/geekygirlsarah/tos-diff.git
     branch: main
     plan: starter
+    region: ohio
     healthCheckPath: /
     envVars:
       - key: DJANGO_SECRET_KEY
@@ -47,6 +48,7 @@ services:
     repo: https://github.com/geekygirlsarah/tos-diff.git
     branch: main
     plan: starter
+    region: ohio
     schedule: "0 2 * * *"  # 02:00 UTC daily
     dockerCommand: manage fetch_documents
     envVars:
@@ -66,5 +68,6 @@ services:
 databases:
   - name: tosdiff-db
     plan: free
+    region: ohio
     databaseName: tosdiff
     user: tosdiff
