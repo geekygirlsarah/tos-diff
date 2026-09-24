@@ -65,7 +65,10 @@ TosDiff-New/
 │   ├── emailing.py       # MailgunBackend (transactional mail via Mailgun HTTP API)
 │   ├── tasks.py          # Celery tasks
 │   ├── tests.py          # All unit tests
-│   └── management/commands/fetch_documents.py
+│   └── management/commands/
+│       ├── fetch_documents.py
+│       ├── export_monitor_data.py
+│       └── import_monitor_data.py
 ├── templates/
 │   ├── base.html         # Bootstrap 5 base layout
 │   └── monitor/          # App-specific templates
@@ -146,6 +149,19 @@ When implementing a new feature or fixing a bug:
 1. Add to `monitor/services.py` as a pure function with type hints
 2. Keep it side-effect-free and Celery-friendly
 3. Add unit tests with `unittest.mock.patch` for external calls (HTTP, filesystem)
+
+### Moving tracked data between databases
+`export_monitor_data` / `import_monitor_data` (JSON archive) is the supported way to move monitored orgs/docs/snapshots (e.g. local dev → production):
+
+```bash
+python manage.py export_monitor_data --output monitor.json --no-snapshots   # on the source DB
+python manage.py import_monitor_data --input monitor.json                   # on the target DB
+```
+
+- Records are keyed on natural keys (`Country`/`Language` `code`, `Tag` `name`, `Organization` `slug`, `Document` `(organization, document_type, url)`, snapshots by `(document, text_hash, captured_at)`) so import is idempotent and merges into existing rows rather than duplicating them.
+- Timestamps (incl. `DocumentSnapshot.captured_at`) keep full microsecond precision in the archive; the import writes snapshots back with `bulk_create` then restores `captured_at` (since `auto_now_add` would otherwise overwrite it).
+- `--no-snapshots` skips the (potentially large) snapshot section on either command.
+- `import_monitor_data --replace` deletes all existing monitored data (snapshots, documents, organizations, tags, countries, languages) before importing so the target DB mirrors the archive exactly — use for one-time resets; note it cascades to user `DocumentSubscription`/`OrganizationSubscription`/`PendingNotification` rows.
 
 ---
 
@@ -265,6 +281,8 @@ All three jobs must pass before merging.
 ## Environment Variables
 
 All secrets and connection strings are read from environment variables. See `.env.example` for the full list. **Never commit `.env` files.**
+
+When `DATABASE_URL` is set it takes precedence over `DB_ENGINE`; its query params (e.g. `?sslmode=require` for Render Postgres) are forwarded verbatim into `DATABASES["default"]["OPTIONS"]` via `database_config_from_url()` in `tosdiff/settings.py`.
 
 ---
 

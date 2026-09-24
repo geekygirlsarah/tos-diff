@@ -4,7 +4,10 @@ Unit tests for the monitor app.
 Run with:  python manage.py test monitor
 """
 
+import json
 import logging
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import requests
@@ -14,10 +17,12 @@ from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.mail import EmailMessage, EmailMultiAlternatives
 from django.core.mail.backends.smtp import EmailBackend as SMTPEmailBackend
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db import IntegrityError
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.utils.log import AdminEmailHandler
 
 from .emailing import MailgunBackend
@@ -997,6 +1002,275 @@ class FetchDocumentsCommandTest(TestCase):
         mock_fetch.return_value = (MagicMock(), False)
         call_command("fetch_documents", shuffle=False)
         self.assertFalse(mock_shuffle.called)
+
+
+class ExportMonitorDataCommandTest(TestCase):
+    def setUp(self):
+        self.tag = Tag.objects.create(name="Open Source")
+        self.language = Language.objects.get_or_create(code="en", defaults={"name": "English"})[0]
+        self.country = Country.objects.create(name="United States", code="US")
+        self.parent_org = Organization.objects.create(
+            name="Parent Co", website_url="https://parent.example"
+        )
+        self.child_org = Organization.objects.create(
+            name="Child Co", website_url="https://child.example", parent=self.parent_org
+        )
+        self.child_org.tags.add(self.tag)
+        self.past = timezone.now() - timezone.timedelta(days=3)
+        self.doc = Document.objects.create(
+            organization=self.child_org,
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+            url="https://child.example/privacy",
+            language=self.language,
+            country=self.country,
+            last_changed=self.past,
+        )
+        self.snapshot = DocumentSnapshot.objects.create(
+            document=self.doc,
+            cleaned_text="Hello world",
+            text_hash=compute_hash("Hello world"),
+        )
+        DocumentSnapshot.objects.filter(pk=self.snapshot.pk).update(captured_at=self.past)
+
+    def _export(self, path, **kwargs):
+        from django.core.management import call_command
+
+        call_command("export_monitor_data", output=str(path), **kwargs)
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_exports_lookup_tables(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = self._export(Path(tmp) / "export.json")
+        self.assertEqual(data["version"], 1)
+        self.assertEqual([c["code"] for c in data["countries"]], ["US"])
+        self.assertEqual([lang["code"] for lang in data["languages"]], ["en"])
+        self.assertEqual([t["name"] for t in data["tags"]], ["Open Source"])
+
+    def test_exports_organizations_with_relations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = self._export(Path(tmp) / "export.json")
+        child = next(o for o in data["organizations"] if o["slug"] == "child-co")
+        self.assertEqual(child["parent"], "parent-co")
+        self.assertEqual(child["tags"], ["Open Source"])
+
+    def test_exports_documents_and_snapshots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = self._export(Path(tmp) / "export.json")
+        self.assertEqual(len(data["documents"]), 1)
+        doc = data["documents"][0]
+        self.assertEqual(doc["organization"], "child-co")
+        self.assertEqual(doc["language"], "en")
+        self.assertEqual(doc["country"], "US")
+        self.assertEqual(doc["document_type"], "privacy")
+        self.assertEqual(len(data["snapshots"]), 1)
+        snap = data["snapshots"][0]
+        self.assertEqual(snap["organization"], "child-co")
+        self.assertEqual(snap["text_hash"], compute_hash("Hello world"))
+        self.assertEqual(snap["cleaned_text"], "Hello world")
+        self.assertIn("captured_at", snap)
+
+    def test_export_can_skip_snapshots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = self._export(Path(tmp) / "export.json", no_snapshots=True)
+        self.assertEqual(len(data["documents"]), 1)
+        self.assertEqual(data["snapshots"], [])
+
+
+class ImportMonitorDataCommandTest(TestCase):
+    def setUp(self):
+        self.tag = Tag.objects.create(name="Open Source")
+        self.language = Language.objects.get_or_create(code="en", defaults={"name": "English"})[0]
+        self.country = Country.objects.create(name="United States", code="US")
+        self.parent_org = Organization.objects.create(
+            name="Parent Co", website_url="https://parent.example"
+        )
+        self.child_org = Organization.objects.create(
+            name="Child Co", website_url="https://child.example", parent=self.parent_org
+        )
+        self.child_org.tags.add(self.tag)
+        self.past = timezone.now() - timezone.timedelta(days=3)
+        self.doc = Document.objects.create(
+            organization=self.child_org,
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+            url="https://child.example/privacy",
+            language=self.language,
+            country=self.country,
+            last_changed=self.past,
+        )
+        self.snapshot = DocumentSnapshot.objects.create(
+            document=self.doc,
+            cleaned_text="Hello world",
+            text_hash=compute_hash("Hello world"),
+        )
+        DocumentSnapshot.objects.filter(pk=self.snapshot.pk).update(captured_at=self.past)
+
+    def _export_data(self):
+        from django.core.management import call_command
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "export.json"
+            call_command("export_monitor_data", output=str(path))
+            return json.loads(path.read_text(encoding="utf-8"))
+
+    def _import_data(self, data, **kwargs):
+        from django.core.management import call_command
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "import.json"
+            path.write_text(json.dumps(data, cls=DjangoJSONEncoder), encoding="utf-8")
+            call_command("import_monitor_data", input=str(path), **kwargs)
+
+    def _wipe_monitor_data(self):
+        DocumentSnapshot.objects.all().delete()
+        Document.objects.all().delete()
+        Organization.objects.all().delete()
+        Tag.objects.all().delete()
+        Language.objects.all().delete()
+        Country.objects.all().delete()
+
+    def test_import_recreates_full_dataset(self):
+        data = self._export_data()
+        self._wipe_monitor_data()
+        self._import_data(data)
+
+        self.assertEqual(Country.objects.count(), 1)
+        self.assertEqual(Language.objects.count(), 1)
+        self.assertEqual(Tag.objects.count(), 1)
+        self.assertEqual(Organization.objects.count(), 2)
+        child = Organization.objects.get(slug="child-co")
+        self.assertEqual(child.parent.slug, "parent-co")
+        self.assertEqual(list(child.tags.values_list("name", flat=True)), ["Open Source"])
+        doc = Document.objects.get()
+        self.assertEqual(doc.organization, child)
+        self.assertEqual(doc.language.code, "en")
+        self.assertEqual(doc.country.code, "US")
+        snap = DocumentSnapshot.objects.get()
+        self.assertEqual(snap.text_hash, compute_hash("Hello world"))
+        self.assertEqual(snap.cleaned_text, "Hello world")
+        self.assertEqual(snap.captured_at, self.past)
+
+    def test_import_is_idempotent(self):
+        data = self._export_data()
+        self._wipe_monitor_data()
+        self._import_data(data)
+        self._import_data(data)
+
+        self.assertEqual(Organization.objects.count(), 2)
+        self.assertEqual(Document.objects.count(), 1)
+        self.assertEqual(DocumentSnapshot.objects.count(), 1)
+        self.assertEqual(Country.objects.count(), 1)
+        self.assertEqual(Tag.objects.count(), 1)
+
+    def test_import_merges_with_existing_rows(self):
+        data = self._export_data()
+        child_pk = self.child_org.pk
+        self.child_org.website_url = "https://old.example"
+        self.child_org.save()
+        self._import_data(data)
+
+        child = Organization.objects.get(pk=child_pk)
+        self.assertEqual(child.website_url, "https://child.example")
+        self.assertEqual(Organization.objects.count(), 2)
+        self.assertEqual(Document.objects.count(), 1)
+        self.assertEqual(DocumentSnapshot.objects.count(), 1)
+
+    def test_import_handles_parent_declared_after_child(self):
+        data = {
+            "version": 1,
+            "countries": [],
+            "languages": [{"pk": 1, "name": "English", "code": "en"}],
+            "tags": [],
+            "organizations": [
+                {
+                    "pk": 2,
+                    "name": "Child Co",
+                    "slug": "child-co",
+                    "website_url": "https://child.example",
+                    "category": "",
+                    "is_failing": False,
+                    "parent": "parent-co",
+                    "tags": [],
+                },
+                {
+                    "pk": 1,
+                    "name": "Parent Co",
+                    "slug": "parent-co",
+                    "website_url": "https://parent.example",
+                    "category": "",
+                    "is_failing": False,
+                    "parent": None,
+                    "tags": [],
+                },
+            ],
+            "documents": [
+                {
+                    "pk": 1,
+                    "organization": "child-co",
+                    "name": "",
+                    "document_type": "tos",
+                    "other_document_type": "",
+                    "url": "https://child.example/tos",
+                    "fetch_method": "requests",
+                    "document_format": "html",
+                    "language": "en",
+                    "country": None,
+                    "last_checked": None,
+                    "last_changed": None,
+                    "is_active": True,
+                    "is_failing": False,
+                    "custom_selectors": "",
+                    "fetch_config": None,
+                }
+            ],
+            "snapshots": [
+                {
+                    "organization": "child-co",
+                    "document_type": "tos",
+                    "url": "https://child.example/tos",
+                    "captured_at": "2024-01-02T03:04:05+00:00",
+                    "text_hash": "abc123",
+                    "cleaned_text": "Yo",
+                }
+            ],
+        }
+        self._wipe_monitor_data()
+        self._import_data(data)
+
+        child = Organization.objects.get(slug="child-co")
+        self.assertEqual(child.parent.slug, "parent-co")
+        self.assertEqual(Document.objects.count(), 1)
+        snap = DocumentSnapshot.objects.get()
+        self.assertEqual(snap.captured_at, parse_datetime("2024-01-02T03:04:05+00:00"))
+
+    def test_import_can_skip_snapshots(self):
+        data = self._export_data()
+        self._wipe_monitor_data()
+        self._import_data(data, no_snapshots=True)
+
+        self.assertEqual(Document.objects.count(), 1)
+        self.assertEqual(DocumentSnapshot.objects.count(), 0)
+
+    def test_replace_removes_existing_rows(self):
+        data = self._export_data()
+        stale_org = Organization.objects.create(
+            name="Stale Co", website_url="https://stale.example"
+        )
+        Document.objects.create(
+            organization=stale_org,
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+            url="https://stale.example/tos",
+        )
+        Tag.objects.create(name="Stale Tag")
+        self._import_data(data, replace=True)
+
+        self.assertEqual(Organization.objects.count(), 2)
+        self.assertFalse(Organization.objects.filter(slug="stale-co").exists())
+        self.assertEqual(Document.objects.count(), 1)
+        self.assertEqual(Tag.objects.count(), 1)
+        self.assertFalse(Tag.objects.filter(name="Stale Tag").exists())
+        self.assertTrue(
+            Organization.objects.get(slug="child-co").tags.filter(name="Open Source").exists()
+        )
 
 
 class RecentChangesViewTest(TestCase):
@@ -2989,6 +3263,47 @@ class HttpsOnlyProductionTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Strict-Transport-Security", response.headers)
         self.assertTrue(response.cookies["csrftoken"]["secure"])
+
+
+class DatabaseConfigFromUrlTest(TestCase):
+    """DATABASE_URL parsing forwards query params to the Postgres OPTIONS."""
+
+    def test_render_sslmode_require_passed_through(self):
+        from tosdiff.settings import database_config_from_url
+
+        config = database_config_from_url(
+            "postgresql://user:pass@dpg-abc-a.oregon-postgres.render.com/tosdiff?sslmode=require"
+        )
+        self.assertEqual(config["ENGINE"], "django.db.backends.postgresql")
+        self.assertEqual(config["NAME"], "tosdiff")
+        self.assertEqual(config["USER"], "user")
+        self.assertEqual(config["HOST"], "dpg-abc-a.oregon-postgres.render.com")
+        self.assertEqual(config["PORT"], "5432")
+        self.assertEqual(config["OPTIONS"], {"sslmode": "require"})
+
+    def test_no_query_params_means_empty_options(self):
+        from tosdiff.settings import database_config_from_url
+
+        config = database_config_from_url("postgresql://user:pass@host:5432/tosdiff")
+        self.assertEqual(config["OPTIONS"], {})
+
+    def test_last_repeated_param_wins(self):
+        from tosdiff.settings import database_config_from_url
+
+        config = database_config_from_url(
+            "postgresql://user:pass@host:5432/tosdiff?sslmode=require&sslmode=verify-full"
+        )
+        self.assertEqual(config["OPTIONS"], {"sslmode": "verify-full"})
+
+    def test_missing_parts_get_defaults(self):
+        from tosdiff.settings import database_config_from_url
+
+        config = database_config_from_url("postgresql:///tosdiff")
+        self.assertEqual(config["NAME"], "tosdiff")
+        self.assertEqual(config["USER"], "")
+        self.assertEqual(config["HOST"], "localhost")
+        self.assertEqual(config["PORT"], "5432")
+        self.assertEqual(config["OPTIONS"], {})
 
 
 # ---------------------------------------------------------------------------

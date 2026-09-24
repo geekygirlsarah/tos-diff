@@ -12,7 +12,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 import os
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -102,21 +102,31 @@ WSGI_APPLICATION = "tosdiff.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
+
+def database_config_from_url(database_url: str) -> dict:
+    """Build a Django DATABASES entry from a Postgres URL.
+
+    Query parameters (e.g. ``sslmode=require``) are forwarded verbatim to
+    ``OPTIONS`` so Render's TLS requirement works straight from the URL.
+    """
+    parsed = urlparse(database_url)
+    options = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
+    return {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": parsed.path.lstrip("/"),
+        "USER": parsed.username or "",
+        "PASSWORD": parsed.password or "",
+        "HOST": parsed.hostname or "localhost",
+        "PORT": str(parsed.port or 5432),
+        "OPTIONS": options,
+    }
+
+
 _database_url = os.environ.get("DATABASE_URL", "")
 _db_engine = os.environ.get("DB_ENGINE", "sqlite3")
 
 if _database_url:
-    _db_parsed = urlparse(_database_url)
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.postgresql",
-            "NAME": _db_parsed.path.lstrip("/"),
-            "USER": _db_parsed.username or "",
-            "PASSWORD": _db_parsed.password or "",
-            "HOST": _db_parsed.hostname or "localhost",
-            "PORT": str(_db_parsed.port or 5432),
-        }
-    }
+    DATABASES = {"default": database_config_from_url(_database_url)}
 elif _db_engine == "postgresql":
     DATABASES = {
         "default": {
