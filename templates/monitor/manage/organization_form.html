@@ -27,7 +27,8 @@
       <form method="post" novalidate>
         {% csrf_token %}
         <div class="row g-4">
-          {% include "monitor/manage/_field.html" with field=form.name col_class="col-12" %}
+          {% include "monitor/manage/_field.html" with field=form.name col_class="col-md-6" %}
+          {% include "monitor/manage/_field.html" with field=form.slug col_class="col-md-6" %}
           {% include "monitor/manage/_field.html" with field=form.website_url col_class="col-md-6" %}
           {% include "monitor/manage/_field.html" with field=form.category col_class="col-md-6" %}
           {% include "monitor/manage/_field.html" with field=form.parent col_class="col-md-6" %}

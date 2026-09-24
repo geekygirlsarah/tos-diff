@@ -148,9 +148,15 @@ class OrganizationForm(forms.ModelForm):
 
     class Meta:
         model = Organization
-        fields = ["name", "website_url", "category", "tags", "parent", "is_failing"]
+        fields = ["name", "slug", "website_url", "category", "tags", "parent", "is_failing"]
         widgets = {
             "name": forms.TextInput(attrs={"class": "form-control", "autofocus": True}),
+            "slug": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "auto-filled from name",
+                }
+            ),
             "website_url": forms.URLInput(attrs={"class": "form-control"}),
             "category": forms.Select(attrs={"class": "form-select"}),
             "tags": forms.SelectMultiple(attrs={"class": "form-select"}),

@@ -2083,6 +2083,37 @@ class ManageOrganizationViewsTest(TestCase):
         )
         self.assertContains(response, 'value="Acme"')
 
+    def test_update_form_includes_slug(self):
+        self.org.slug = "acme"
+        self.org.save()
+        response = self.client.get(
+            reverse("monitor:manage_organization_update", args=[self.org.pk])
+        )
+        self.assertContains(response, 'name="slug"')
+        self.assertContains(response, 'value="acme"')
+
+    def test_update_organization_can_set_slug(self):
+        response = self.client.post(
+            reverse("monitor:manage_organization_update", args=[self.org.pk]),
+            {"name": "Acme Inc", "website_url": self.org.website_url, "slug": "acme-inc"},
+        )
+        self.assertRedirects(response, reverse("monitor:manage_organizations"))
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.slug, "acme-inc")
+
+    def test_create_organization_auto_generates_slug_when_blank(self):
+        response = self.client.post(
+            reverse("monitor:manage_organization_create"),
+            {
+                "name": "Initech",
+                "website_url": "https://initech.example.com",
+                "slug": "",
+            },
+        )
+        self.assertRedirects(response, reverse("monitor:manage_organizations"))
+        org = Organization.objects.get(name="Initech")
+        self.assertEqual(org.slug, "initech")
+
 
 class ManageDocumentViewsTest(TestCase):
     def setUp(self):
