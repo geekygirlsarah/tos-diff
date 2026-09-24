@@ -7,13 +7,15 @@ management command, a Celery task, or a view.
 import hashlib
 import io
 import logging
+import queue
 import random
 import re
 import secrets
 import threading
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
+from typing import Any
 
 import pdfplumber
 import requests
@@ -96,42 +98,132 @@ def _rate_limit(url: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Playwright browser — reusable singleton
+# Playwright browser — one shared browser, owned by a single worker thread
 # ---------------------------------------------------------------------------
 
+# Chromium launch flags for a headless scraper:
+#   --disable-dev-shm-usage      /dev/shm is tiny (64MB) in Docker; without this, large pages crash
+#   --no-sandbox                 Chromium can't use its SUID sandbox when running as root in a container
+#   --disable-gpu / --disable-software-rasterizer --headless
+#                                reduce per-page GPU/shader memory
+_CHROMIUM_ARGS = [
+    "--disable-dev-shm-usage",
+    "--no-sandbox",
+    "--disable-gpu",
+    "--disable-software-rasterizer",
+]
+
 _playwright_lock = threading.Lock()
-_playwright_instance = None  # playwright context manager
-_playwright_browser = None  # Browser instance
+_playwright_instance = None  # playwright context manager (owned by worker thread)
+_playwright_browser = None  # Browser instance (owned by worker thread)
+
+_playwright_worker_lock = threading.Lock()
+_playwright_worker: threading.Thread | None = None
+_playwright_queue: queue.Queue | None = None
 
 
-def _get_playwright_browser():
-    """Return a shared, lazily-initialised Playwright Chromium browser."""
+def _get_playwright_browser() -> Any:
+    """Return the shared, lazily-initialised Playwright Chromium browser.
+
+    One browser is created per process and reused for every fetch, so a whole
+    `fetch_documents` run (or Celery worker) uses a single Chromium instead of
+    launching/closing one per document.  Must only be called from the Playwright
+    worker thread (see :func:`_playwright_submit`).
+    """
     global _playwright_instance, _playwright_browser
     with _playwright_lock:
         if _playwright_browser is None or not _playwright_browser.is_connected():
             from playwright.sync_api import sync_playwright
 
             _playwright_instance = sync_playwright().__enter__()
-            _playwright_browser = _playwright_instance.chromium.launch(headless=True)
+            _playwright_browser = _playwright_instance.chromium.launch(
+                headless=True,
+                args=_CHROMIUM_ARGS,
+            )
     return _playwright_browser
 
 
+def _playwright_worker_main() -> None:
+    """
+    Own the Playwright sync session for the lifetime of the process.
+
+    Playwright's sync API leaves an asyncio event loop "running" in whatever
+    thread executes it; Django's async-safety checks then reject every database
+    call made from that thread.  All Playwright work is therefore confined to
+    this single thread.  Running it here (rather than a fresh thread per fetch)
+    keeps one browser alive and reused across submissions.
+    """
+    global _playwright_instance, _playwright_browser, _playwright_queue
+    try:
+        while True:
+            holder = _playwright_queue.get()
+            if holder is None:  # shutdown sentinel
+                break
+            func = holder["func"]
+            try:
+                holder["result"] = func()
+            except BaseException as exc:  # noqa: BLE001
+                holder["error"] = exc
+            finally:
+                holder["done"].set()
+                _playwright_queue.task_done()
+    finally:
+        with _playwright_lock:
+            if _playwright_browser is not None:
+                try:
+                    _playwright_browser.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                _playwright_browser = None
+            if _playwright_instance is not None:
+                try:
+                    _playwright_instance.__exit__(None, None, None)
+                except Exception:  # noqa: BLE001
+                    pass
+                _playwright_instance = None
+
+
+def _playwright_submit(func: Callable[[], Any]) -> Any:
+    """
+    Run *func* on the dedicated Playwright worker thread and block for its result.
+
+    The worker (and its browser) is created lazily on first use and kept alive so
+    consecutive fetches reuse a single Chromium instance.  Exceptions raised by
+    *func* are re-raised in the calling thread.
+    """
+    global _playwright_worker, _playwright_queue
+    with _playwright_worker_lock:
+        if _playwright_worker is None or not _playwright_worker.is_alive():
+            _playwright_queue = queue.Queue()
+            _playwright_worker = threading.Thread(
+                target=_playwright_worker_main,
+                name="playwright-worker",
+                daemon=True,
+            )
+            _playwright_worker.start()
+        work_queue = _playwright_queue
+
+    done = threading.Event()
+    holder: dict[str, Any] = {"func": func, "done": done}
+    work_queue.put(holder)
+    done.wait()
+    if "error" in holder:
+        raise holder["error"]
+    return holder["result"]
+
+
 def close_playwright_browser() -> None:
-    """Cleanly shut down the shared Playwright browser (call on worker shutdown)."""
-    global _playwright_instance, _playwright_browser
-    with _playwright_lock:
-        if _playwright_browser is not None:
-            try:
-                _playwright_browser.close()
-            except Exception:  # noqa: BLE001
-                pass
-            _playwright_browser = None
-        if _playwright_instance is not None:
-            try:
-                _playwright_instance.__exit__(None, None, None)
-            except Exception:  # noqa: BLE001
-                pass
-            _playwright_instance = None
+    """Cleanly shut down the shared Playwright browser and its worker thread."""
+    global _playwright_worker, _playwright_queue
+    with _playwright_worker_lock:
+        worker = _playwright_worker
+        work_queue = _playwright_queue
+        _playwright_worker = None
+        _playwright_queue = None
+    if work_queue is not None:
+        work_queue.put(None)  # worker releases the browser, then stops
+    if worker is not None:
+        worker.join(timeout=10)
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +247,13 @@ def fetch_html_playwright(
     timeout: int = DEFAULT_TIMEOUT,
 ) -> str:
     """
-    Fetch fully-rendered HTML from *url* using a headless Chromium browser.
+    Fetch fully-rendered HTML from *url* using a shared headless Chromium browser.
+
+    All work runs on a single dedicated worker thread (see
+    :func:`_playwright_submit`) so Django never sees Playwright's event loop and
+    one browser is reused for the whole run instead of launching a fresh
+    Chromium per call.  A new :class:`BrowserContext` is created per fetch so
+    cookies/storage never leak between pages.
 
     Parameters
     ----------
@@ -173,45 +271,38 @@ def fetch_html_playwright(
     timeout:
         Navigation timeout in seconds.
     """
+    _rate_limit(url)
 
     def _run() -> str:
-        from playwright.sync_api import sync_playwright
+        browser = _get_playwright_browser()
+        context = browser.new_context(
+            user_agent=DEFAULT_HEADERS["User-Agent"],
+            java_script_enabled=True,
+        )
+        try:
+            page = context.new_page()
+            page.goto(url, wait_until="networkidle", timeout=timeout * 1000)
 
-        _rate_limit(url)
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
-            try:
-                context = browser.new_context(
-                    user_agent=DEFAULT_HEADERS["User-Agent"],
-                    java_script_enabled=True,
-                )
+            if wait_for_selector:
+                page.wait_for_selector(wait_for_selector, timeout=timeout * 1000)
+
+            if sleep_seconds > 0:
+                time.sleep(sleep_seconds)
+
+            for selector in dismiss_selectors or []:
                 try:
-                    page = context.new_page()
-                    page.goto(url, wait_until="networkidle", timeout=timeout * 1000)
+                    btn = page.query_selector(selector)
+                    if btn:
+                        btn.click()
+                        time.sleep(0.5)
+                except Exception:  # noqa: BLE001
+                    pass
 
-                    if wait_for_selector:
-                        page.wait_for_selector(wait_for_selector, timeout=timeout * 1000)
+            return page.content()
+        finally:
+            context.close()
 
-                    if sleep_seconds > 0:
-                        time.sleep(sleep_seconds)
-
-                    for selector in dismiss_selectors or []:
-                        try:
-                            btn = page.query_selector(selector)
-                            if btn:
-                                btn.click()
-                                time.sleep(0.5)
-                        except Exception:  # noqa: BLE001
-                            pass
-
-                    return page.content()
-                finally:
-                    context.close()
-            finally:
-                browser.close()
-
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(_run).result()
+    return _playwright_submit(_run)
 
 
 def _is_pdf_response(response: requests.Response) -> bool:

@@ -560,6 +560,57 @@ class FetchAndSnapshotTest(TestCase):
         self.assertEqual(method, Document.FetchMethod.PLAYWRIGHT)
 
 
+class PlaywrightBrowserReuseTest(TestCase):
+    """The shared Playwright browser is created once and reused across fetches."""
+
+    def setUp(self):
+        from monitor import services
+
+        services._playwright_browser = None
+        services._playwright_instance = None
+
+    def _fake_sync_playwright(self, mock_sync):
+        browser = MagicMock()
+        browser.is_connected.return_value = True
+        page = MagicMock()
+        page.content.return_value = "<html><body><p>Terms</p></body></html>"
+        context = MagicMock()
+        context.new_page.return_value = page
+        browser.new_context.return_value = context
+        pw = MagicMock()
+        pw.chromium.launch.return_value = browser
+        mock_sync.return_value.__enter__.return_value = pw
+        return pw, browser
+
+    @patch("monitor.services._rate_limit")
+    @patch("playwright.sync_api.sync_playwright")
+    def test_launches_single_browser_for_multiple_fetches(self, mock_sync, mock_rate):  # noqa: ARG002
+        pw, browser = self._fake_sync_playwright(mock_sync)
+
+        from monitor.services import fetch_html_playwright
+
+        fetch_html_playwright("https://example.com/tos")
+        fetch_html_playwright("https://example.org/privacy")
+
+        self.assertEqual(mock_sync.call_count, 1)
+        self.assertEqual(pw.chromium.launch.call_count, 1)
+        self.assertEqual(browser.new_context.call_count, 2)
+
+    @patch("monitor.services._rate_limit")
+    @patch("playwright.sync_api.sync_playwright")
+    def test_browser_launched_with_low_memory_args(self, mock_sync, mock_rate):  # noqa: ARG002
+        pw, _browser = self._fake_sync_playwright(mock_sync)
+
+        from monitor.services import fetch_html_playwright
+
+        fetch_html_playwright("https://example.com/tos")
+
+        kwargs = pw.chromium.launch.call_args.kwargs
+        self.assertEqual(kwargs["headless"], True)
+        for flag in ("--disable-dev-shm-usage", "--no-sandbox", "--disable-gpu"):
+            self.assertIn(flag, kwargs["args"])
+
+
 # ---------------------------------------------------------------------------
 # PDF support tests
 # ---------------------------------------------------------------------------

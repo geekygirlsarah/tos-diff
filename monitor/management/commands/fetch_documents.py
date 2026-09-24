@@ -130,6 +130,10 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.ERROR(f"ERROR: {exc}"))
                 errors += 1
 
+        from monitor.services import close_playwright_browser
+
+        close_playwright_browser()
+
         self.stdout.write(
             self.style.SUCCESS(f"\nDone. {changed}/{total} document(s) changed. {errors} error(s).")
         )
