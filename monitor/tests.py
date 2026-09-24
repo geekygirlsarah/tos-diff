@@ -12,7 +12,7 @@ from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.db import IntegrityError
-from django.test import TestCase
+from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -1618,6 +1618,23 @@ class LoginRequestViewTest(TestCase):
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].to, ["alice@example.com"])
 
+    def test_post_behind_https_proxy_does_not_reject_origin(self):
+        client = Client(enforce_csrf_checks=True)
+        client.get(reverse("monitor:login_request"))
+        token = client.cookies["csrftoken"].value
+        extra = {
+            "HTTP_ORIGIN": "https://tosdiff.org",
+            "HTTP_HOST": "tosdiff.org",
+            "HTTP_X_FORWARDED_PROTO": "https",
+            "wsgi.url_scheme": "http",
+        }
+        response = client.post(
+            reverse("monitor:login_request"),
+            {"email": "proxy@example.com", "csrfmiddlewaretoken": token},
+            **extra,
+        )
+        self.assertEqual(response.status_code, 302)
+
     def test_post_stores_email_in_session(self):
         self.client.post(reverse("monitor:login_request"), {"email": "bob@example.com"})
         self.assertEqual(self.client.session["login_email"], "bob@example.com")
@@ -2764,3 +2781,52 @@ class BeatScheduleDigestTest(TestCase):
         tasks = {entry["task"] for entry in settings.CELERY_BEAT_SCHEDULE.values()}
         self.assertIn("monitor.tasks.send_daily_digests", tasks)
         self.assertIn("monitor.tasks.send_weekly_digests", tasks)
+
+
+class HttpsOnlyProductionTest(TestCase):
+    """HTTPS-only settings must match the production values in settings.py."""
+
+    @override_settings(
+        DEBUG=False,
+        SECURE_PROXY_SSL_HEADER=("HTTP_X_FORWARDED_PROTO", "https"),
+        SECURE_SSL_REDIRECT=True,
+        SECURE_HSTS_SECONDS=31_536_000,
+        SECURE_HSTS_INCLUDE_SUBDOMAINS=True,
+        SECURE_HSTS_PRELOAD=True,
+        SESSION_COOKIE_SECURE=True,
+        CSRF_COOKIE_SECURE=True,
+        SECURE_REFERRER_POLICY="same-origin",
+        ALLOWED_HOSTS=["tosdiff.org"],
+    )
+    def test_plain_http_is_redirected_to_https(self):
+        response = self.client.get(
+            reverse("monitor:home"),
+            **{"HTTP_HOST": "tosdiff.org", "wsgi.url_scheme": "http"},
+        )
+        self.assertEqual(response.status_code, 301)
+        self.assertTrue(response["Location"].startswith("https://tosdiff.org/"))
+
+    @override_settings(
+        DEBUG=False,
+        SECURE_PROXY_SSL_HEADER=("HTTP_X_FORWARDED_PROTO", "https"),
+        SECURE_SSL_REDIRECT=True,
+        SECURE_HSTS_SECONDS=31_536_000,
+        SECURE_HSTS_INCLUDE_SUBDOMAINS=True,
+        SECURE_HSTS_PRELOAD=True,
+        SESSION_COOKIE_SECURE=True,
+        CSRF_COOKIE_SECURE=True,
+        SECURE_REFERRER_POLICY="same-origin",
+        ALLOWED_HOSTS=["tosdiff.org"],
+    )
+    def test_https_response_sets_hsts_and_secure_cookies(self):
+        response = self.client.get(
+            reverse("monitor:login_request"),
+            **{
+                "HTTP_HOST": "tosdiff.org",
+                "HTTP_X_FORWARDED_PROTO": "https",
+                "wsgi.url_scheme": "http",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Strict-Transport-Security", response.headers)
+        self.assertTrue(response.cookies["csrftoken"]["secure"])

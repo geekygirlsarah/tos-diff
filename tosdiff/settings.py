@@ -33,6 +33,28 @@ DEBUG = os.environ.get("DJANGO_DEBUG", "true").lower() in ("1", "true", "yes")
 _allowed = os.environ.get("DJANGO_ALLOWED_HOSTS", "")
 ALLOWED_HOSTS = [h.strip() for h in _allowed.split(",") if h.strip()] or (["*"] if DEBUG else [])
 
+# Render terminates TLS at its edge and forwards requests to the container
+# over plain HTTP; without this Django would treat requests as insecure and
+# reject the browser's https Origins on POSTs (CSRF failures behind the proxy).
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# Permit the browser's https Origin/Referer on POSTs for every allowed host.
+CSRF_TRUSTED_ORIGINS = [
+    f"{scheme}://{host}" for host in ALLOWED_HOSTS if host != "*" for scheme in ("https", "http")
+]
+
+# HTTPS-only in production. TLS is terminated by Render's edge, so the
+# container sees the forwarded-proto header set above; the cookie/redirect
+# settings below only apply once DEBUG is off (never during local dev).
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SECURE_HSTS_SECONDS = 31_536_000  # one year
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_REFERRER_POLICY = "same-origin"
+
 
 # Application definition
 
