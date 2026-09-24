@@ -253,7 +253,8 @@ All three jobs must pass before merging.
 - `is_active` (BooleanField, default True)
 - `is_failing` (BooleanField, default False)
 - `custom_selectors` — CSS selectors to strip before extraction, one per line
-- `fetch_config` — JSONField for Playwright options (`wait_for_selector`, `sleep_seconds`, `dismiss_selectors`)
+- `fetch_config` — JSONField for Playwright options (`wait_for_selector`, `sleep_seconds`, `dismiss_selectors`, `challenge_timeout`)
+- The Playwright fetcher (`fetch_html_playwright`) waits for Cloudflare verification challenges to auto-resolve before extracting: it detects challenge pages via URL markers / Turnstile iframes / body text, polls every ~10s for a redirect (max `challenge_timeout` seconds, default 30) and raises `RuntimeError` when unresolved so challenge HTML is never persisted as a snapshot.
 - Unique together: `(organization, document_type, url)`
 
 ### `DocumentSnapshot`

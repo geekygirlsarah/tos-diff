@@ -200,7 +200,9 @@ class Document(models.Model):
             "Optional Playwright fetch configuration. "
             "Keys: wait_for_selector (CSS selector to wait for), "
             "sleep_seconds (extra wait time for JS rendering), "
-            "dismiss_selectors (list of CSS selectors for cookie/modal buttons to click)."
+            "dismiss_selectors (list of CSS selectors for cookie/modal buttons to click), "
+            "challenge_timeout (seconds to wait for a Cloudflare verification "
+            "challenge to auto-resolve; default 30)."
         ),
     )
 

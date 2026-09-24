@@ -254,11 +254,77 @@ def fetch_html(url: str, timeout: int = DEFAULT_TIMEOUT) -> str:
     return response.text
 
 
+# ---------------------------------------------------------------------------
+# Cloudflare verification challenges — detect and wait out before extracting
+# ---------------------------------------------------------------------------
+
+# URL substrings that indicate the page is a Cloudflare challenge (the page
+# auto-redirects to the real URL once the browser-side checks pass).
+_CHALLENGE_URL_MARKERS = (
+    "cdn-cgi/challenge-platform",
+    "cf_chl_",
+    "challenges.cloudflare.com",
+)
+
+# Text that Cloudflare challenge pages commonly display while verifying.
+_CHALLENGE_TEXT_MARKERS = (
+    "verify you are human",
+    "checking your browser",
+    "enable javascript and cookies",
+)
+
+# CSS selector for the interactive Turnstile checkbox iframe.  We only detect
+# its presence; we never automate clicking it.
+_TURNSTILE_IFRAME = "iframe[src*='challenges.cloudflare.com'], iframe[src*='cf_captcha']"
+
+# Maximum seconds to wait for a challenge to auto-resolve before giving up.
+DEFAULT_CHALLENGE_TIMEOUT = 30.0
+
+# Per-poll window for wait_for_load_state while a challenge is pending.
+_CHALLENGE_POLL_SECONDS = 10.0
+
+
+def _looks_like_challenge(page: Any) -> bool:
+    """Return True if *page* is showing a Cloudflare verification challenge."""
+    if any(marker in str(page.url) for marker in _CHALLENGE_URL_MARKERS):
+        return True
+    try:
+        turnstile_count = page.locator(_TURNSTILE_IFRAME).count()
+        body_text = str(page.locator("body").inner_text(timeout=2000)).lower()
+    except Exception:  # noqa: BLE001 - a mid-navigation page can raise; treat as not-challenge
+        return False
+    if isinstance(turnstile_count, int) and turnstile_count > 0:
+        return True
+    return any(marker in body_text for marker in _CHALLENGE_TEXT_MARKERS)
+
+
+def _wait_for_challenge_to_clear(page: Any, challenge_timeout: float) -> None:
+    """Wait up to *challenge_timeout* seconds for a challenge page to resolve.
+
+    Cloudflare's non-interactive challenge runs fingerprinting checks in the
+    browser and then redirects to the real page.  While the challenge is
+    detected we keep polling: each poll waits up to ``_CHALLENGE_POLL_SECONDS``
+    for a load event so a late redirect has time to complete.  If the challenge
+    never clears within the deadline, we raise instead of extracting HTML that
+    would otherwise be persisted as a (false-positive) document change.
+    """
+    deadline = time.monotonic() + challenge_timeout
+    while time.monotonic() < deadline and _looks_like_challenge(page):
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=_CHALLENGE_POLL_SECONDS * 1000)
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(1)
+    if _looks_like_challenge(page):
+        raise RuntimeError("Cloudflare challenge did not resolve within timeout")
+
+
 def fetch_html_playwright(
     url: str,
     wait_for_selector: str | None = None,
     sleep_seconds: float = 0.0,
     dismiss_selectors: list[str] | None = None,
+    challenge_timeout: float = DEFAULT_CHALLENGE_TIMEOUT,
     timeout: int = DEFAULT_TIMEOUT,
 ) -> str:
     """
@@ -276,13 +342,16 @@ def fetch_html_playwright(
         Page URL to load.
     wait_for_selector:
         CSS selector to wait for before extracting HTML (e.g. ``"main"``).  If
-        *None*, waits for ``networkidle`` only.
+        *None*, waits for ``"domcontentloaded"`` only.
     sleep_seconds:
         Additional seconds to sleep after the page has loaded, to allow
         late-rendering JavaScript to finish.
     dismiss_selectors:
         List of CSS selectors for cookie-consent / modal dismiss buttons to
         click before extracting HTML.
+    challenge_timeout:
+        Maximum seconds to wait for a Cloudflare verification challenge to
+        auto-resolve before raising :class:`RuntimeError`.
     timeout:
         Navigation timeout in seconds.
     """
@@ -297,7 +366,9 @@ def fetch_html_playwright(
         try:
             context.route("**/*", _block_heavy_resources)
             page = context.new_page()
-            page.goto(url, wait_until="networkidle", timeout=timeout * 1000)
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+
+            _wait_for_challenge_to_clear(page, challenge_timeout)
 
             if wait_for_selector:
                 page.wait_for_selector(wait_for_selector, timeout=timeout * 1000)
@@ -651,6 +722,7 @@ def fetch_document_content(document: Document) -> tuple[str | None, str]:
     wait_for_selector: str | None = cfg.get("wait_for_selector")
     sleep_seconds: float = float(cfg.get("sleep_seconds", 0))
     dismiss_selectors: list[str] = cfg.get("dismiss_selectors") or []
+    challenge_timeout: float = float(cfg.get("challenge_timeout", DEFAULT_CHALLENGE_TIMEOUT))
 
     use_playwright = document.fetch_method == Document.FetchMethod.PLAYWRIGHT
 
@@ -713,6 +785,7 @@ def fetch_document_content(document: Document) -> tuple[str | None, str]:
                 wait_for_selector=wait_for_selector,
                 sleep_seconds=sleep_seconds,
                 dismiss_selectors=dismiss_selectors,
+                challenge_timeout=challenge_timeout,
             )
             text = extract_text(html, extra_selectors=extra_selectors or None)
             Document.objects.filter(pk=document.pk).update(

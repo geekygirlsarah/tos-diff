@@ -560,6 +560,18 @@ class FetchAndSnapshotTest(TestCase):
         mock_playwright.assert_called_once()
         self.assertEqual(method, Document.FetchMethod.PLAYWRIGHT)
 
+    @patch("monitor.services.fetch_html_playwright")
+    def test_fetch_config_challenge_timeout_passed_through(self, mock_playwright):
+        mock_playwright.return_value = "<html><body><p>Terms</p></body></html>"
+        self.doc.fetch_method = Document.FetchMethod.PLAYWRIGHT
+        self.doc.fetch_config = {"challenge_timeout": 7}
+        self.doc.save()
+        from monitor.services import fetch_document_content
+
+        text, method = fetch_document_content(self.doc)
+        self.assertEqual(method, Document.FetchMethod.PLAYWRIGHT)
+        self.assertEqual(mock_playwright.call_args.kwargs["challenge_timeout"], 7)
+
 
 class PlaywrightBrowserReuseTest(TestCase):
     """The shared Playwright browser is created once and reused across fetches."""
@@ -659,6 +671,126 @@ class PlaywrightResourceBlockingTest(TestCase):
         _block_heavy_resources(route)
         route.continue_.assert_called_once()
         route.abort.assert_not_called()
+
+
+class CloudflareChallengeTest(TestCase):
+    """Cloudflare verification pages are detected and waited out before extraction."""
+
+    def setUp(self):
+        from monitor import services
+
+        services._playwright_browser = None
+        services._playwright_instance = None
+
+    def _make_page(self, url="https://example.com/tos", body="Terms of Service"):
+        page = MagicMock()
+        page.url = url
+        page.content.return_value = "<html><body><p>Terms</p></body></html>"
+        page.locator.return_value.count.return_value = 0
+        page.locator.return_value.inner_text.return_value = body
+        return page
+
+    def _make_fake_playwright(self, mock_sync, page):
+        browser = MagicMock()
+        browser.is_connected.return_value = True
+        context = MagicMock()
+        context.new_page.return_value = page
+        browser.new_context.return_value = context
+        pw = MagicMock()
+        pw.chromium.launch.return_value = browser
+        mock_sync.return_value.__enter__.return_value = pw
+        return pw, browser, context
+
+    def test_detects_challenge_by_url_marker(self):
+        from monitor.services import _looks_like_challenge
+
+        page = self._make_page(
+            url="https://example.com/cdn-cgi/challenge-platform/h/b/orchestrate/captcha"
+        )
+        self.assertTrue(_looks_like_challenge(page))
+
+    def test_detects_challenge_by_turnstile_iframe(self):
+        from monitor.services import _looks_like_challenge
+
+        page = self._make_page()
+        page.locator.return_value.count.return_value = 1
+        self.assertTrue(_looks_like_challenge(page))
+
+    def test_detects_challenge_by_verification_text(self):
+        from monitor.services import _looks_like_challenge
+
+        page = self._make_page(body="Verify you are human to continue")
+        self.assertTrue(_looks_like_challenge(page))
+
+    def test_normal_page_not_detected_as_challenge(self):
+        from monitor.services import _looks_like_challenge
+
+        page = self._make_page()
+        self.assertFalse(_looks_like_challenge(page))
+
+    @patch("monitor.services.time.sleep")
+    @patch("monitor.services._rate_limit")
+    @patch("playwright.sync_api.sync_playwright")
+    def test_waits_for_challenge_redirect_before_extracting(
+        self,
+        mock_sync,
+        mock_rate,
+        mock_sleep,  # noqa: ARG002
+    ):
+        page = self._make_page(
+            url="https://example.com/cdn-cgi/challenge-platform/h/b/orchestrate/captcha"
+        )
+
+        def _redirect_on_first_poll(*_args, **_kwargs):
+            page.url = "https://example.com/tos"
+
+        page.wait_for_load_state.side_effect = _redirect_on_first_poll
+        self._make_fake_playwright(mock_sync, page)
+
+        from monitor.services import fetch_html_playwright
+
+        html = fetch_html_playwright("https://example.com/tos", challenge_timeout=10)
+
+        self.assertEqual(html, "<html><body><p>Terms</p></body></html>")
+        page.goto.assert_called_once_with(
+            "https://example.com/tos", wait_until="domcontentloaded", timeout=30000
+        )
+        page.wait_for_load_state.assert_called_once_with("domcontentloaded", timeout=10000)
+
+    @patch("monitor.services.time.sleep")
+    @patch("monitor.services.time.monotonic")
+    @patch("monitor.services._rate_limit")
+    @patch("playwright.sync_api.sync_playwright")
+    def test_raises_when_challenge_never_resolves(
+        self,
+        mock_sync,
+        mock_rate,
+        mock_mono,
+        mock_sleep,  # noqa: ARG002
+    ):
+        page = self._make_page(
+            url="https://example.com/cdn-cgi/challenge-platform/h/b/orchestrate/captcha"
+        )
+        mock_mono.side_effect = [0.0, 1.0, 2.0, 30.0]
+        self._make_fake_playwright(mock_sync, page)
+
+        from monitor.services import fetch_html_playwright
+
+        with self.assertRaisesRegex(RuntimeError, "did not resolve"):
+            fetch_html_playwright("https://example.com/tos", challenge_timeout=5)
+        page.content.assert_not_called()
+
+    @patch("monitor.services._rate_limit")
+    @patch("playwright.sync_api.sync_playwright")
+    def test_normal_page_skips_challenge_wait(self, mock_sync, mock_rate):  # noqa: ARG002
+        page = self._make_page()
+        self._make_fake_playwright(mock_sync, page)
+
+        from monitor.services import fetch_html_playwright
+
+        html = fetch_html_playwright("https://example.com/tos", wait_for_selector="main")
+        self.assertEqual(html, "<html><body><p>Terms</p></body></html>")
+        page.wait_for_load_state.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

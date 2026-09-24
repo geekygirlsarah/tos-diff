@@ -262,7 +262,7 @@ class DocumentForm(forms.ModelForm):
                 attrs={
                     "class": "form-control",
                     "rows": 4,
-                    "placeholder": '{"wait_for_selector": ".content"}',
+                    "placeholder": '{"wait_for_selector": ".content", "challenge_timeout": 30}',
                 }
             ),
         }
