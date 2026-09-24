@@ -975,6 +975,105 @@ class FetchDocumentContentPdfTest(TestCase):
         self.assertIsNone(text)
 
 
+class BotBlockPageTest(TestCase):
+    """Access-denied / bot-block interstitials are detected, never snapshotted,
+    and mark the document as failing instead of producing false change digests."""
+
+    AKAMAI_BLOCK_HTML = b"""
+    <html><body>
+      <h1>Access Denied</h1>
+      <p>You don't have permission to access
+      "http://www.marriott.com/about/terms-of-use." on this server.
+      Reference #18.f6c83017.1789115230.2fb21c64
+      https://errors.edgesuite.net/18.f6c83017.1789115230.2fb21c64</p>
+    </body></html>
+    """
+
+    def setUp(self):
+        org = Organization.objects.create(name="Marriott", website_url="https://www.marriott.com")
+        self.doc = Document.objects.create(
+            organization=org, url="https://www.marriott.com/about/terms-of-use"
+        )
+
+    def _response(self, content: bytes, status: int = 200) -> MagicMock:
+        response = MagicMock()
+        response.status_code = status
+        response.headers = {"Content-Type": "text/html"}
+        response.url = "https://www.marriott.com/about/terms-of-use"
+        response.content = content
+        response.raise_for_status = MagicMock()
+        return response
+
+    def test_looks_like_bot_block_detects_akamai_page(self):
+        from monitor.services import _looks_like_bot_block
+
+        text = extract_text(self.AKAMAI_BLOCK_HTML.decode())
+        self.assertTrue(_looks_like_bot_block(text))
+
+    def test_looks_like_bot_block_rejects_normal_document(self):
+        from monitor.services import _looks_like_bot_block
+
+        text = extract_text(
+            "<html><body><h1>Terms of Service</h1>"
+            "<p>Access to this service is denied to minors. "
+            "Contact errors@example.com with reference questions.</p></body></html>"
+        )
+        self.assertFalse(_looks_like_bot_block(text))
+
+    def test_looks_like_bot_block_requires_reference_marker(self):
+        from monitor.services import _looks_like_bot_block
+
+        text = "Access Denied. You don't have permission to access this page."
+        self.assertFalse(_looks_like_bot_block(text))
+
+    def test_looks_like_bot_block_requires_denial_phrase(self):
+        from monitor.services import _looks_like_bot_block
+
+        text = "For help, reference #42 at https://errors.edgesuite.net/42 the edge page."
+        self.assertFalse(_looks_like_bot_block(text))
+
+    @patch("monitor.services.fetch_html_playwright")
+    @patch("monitor.services.requests.get")
+    def test_marks_failing_when_both_methods_return_block_page(self, mock_get, mock_playwright):
+        mock_get.return_value = self._response(self.AKAMAI_BLOCK_HTML)
+        mock_playwright.return_value = self.AKAMAI_BLOCK_HTML.decode()
+
+        snapshot, created = fetch_and_snapshot(self.doc)
+
+        self.assertIsNone(snapshot)
+        self.assertFalse(created)
+        self.doc.refresh_from_db()
+        self.assertTrue(self.doc.is_failing)
+        self.assertEqual(DocumentSnapshot.objects.filter(document=self.doc).count(), 0)
+
+    @patch("monitor.services.fetch_html_playwright")
+    @patch("monitor.services.requests.get")
+    def test_playwright_rescues_when_requests_got_blocked(self, mock_get, mock_playwright):
+        mock_get.return_value = self._response(self.AKAMAI_BLOCK_HTML)
+        mock_playwright.return_value = "<html><body><p>Real Terms content</p></body></html>"
+
+        snapshot, created = fetch_and_snapshot(self.doc)
+
+        self.assertTrue(created)
+        self.assertIsNotNone(snapshot)
+        self.doc.refresh_from_db()
+        self.assertFalse(self.doc.is_failing)
+
+    @patch("monitor.services.fetch_html_playwright")
+    def test_marks_failing_for_playwright_only_document(self, mock_playwright):
+        self.doc.fetch_method = Document.FetchMethod.PLAYWRIGHT
+        self.doc.save()
+        mock_playwright.return_value = self.AKAMAI_BLOCK_HTML.decode()
+
+        snapshot, created = fetch_and_snapshot(self.doc)
+
+        self.assertIsNone(snapshot)
+        self.assertFalse(created)
+        self.doc.refresh_from_db()
+        self.assertTrue(self.doc.is_failing)
+        self.assertEqual(DocumentSnapshot.objects.filter(document=self.doc).count(), 0)
+
+
 # ---------------------------------------------------------------------------
 # View tests
 # ---------------------------------------------------------------------------

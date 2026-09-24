@@ -689,6 +689,48 @@ def compute_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# Bot-block / access-denied pages — detect so they're marked failing instead
+# of being stored as (false-positive) document changes
+# ---------------------------------------------------------------------------
+
+# Phrases that indicate the request was denied by an edge/CDN bot firewall
+# (Akamai, Cloudflare, …) rather than a real document.
+_BOT_BLOCK_DENIAL_MARKERS = (
+    "access denied",
+    "access has been denied",
+    "access is denied",
+    "you don't have permission",
+    "you do not have permission",
+    "request has been blocked",
+    "the request has been blocked",
+    "you have been blocked",
+)
+
+# Error-reference markers the block page carries so operators can look it up.
+# Requiring one of these alongside a denial phrase stops genuine documents
+# that merely mention "access" from being misclassified.
+_BOT_BLOCK_REFERENCE_MARKERS = (
+    "errors.edgesuite.net",
+    "reference #",
+    "error reference",
+    "incident id",
+    "cf-ray",
+)
+
+
+def _looks_like_bot_block(text: str) -> bool:
+    """Return True when *text* is an access-denied / bot-block interstitial.
+
+    Requires both a denial phrase and an error-reference marker so legitimate
+    documents mentioning "access" are not misclassified.
+    """
+    lowered = text.lower()
+    return any(marker in lowered for marker in _BOT_BLOCK_DENIAL_MARKERS) and any(
+        marker in lowered for marker in _BOT_BLOCK_REFERENCE_MARKERS
+    )
+
+
 # HTTP status codes that indicate we should retry with Playwright
 _PLAYWRIGHT_RETRY_STATUSES = {403, 429}
 
@@ -708,6 +750,11 @@ def fetch_document_content(document: Document) -> tuple[str | None, str]:
 
     Automatically detects PDF responses and extracts text accordingly.
     Sets ``document.document_format`` and saves it.
+
+    Access-denied / bot-block interstitials (e.g. Akamai "Access Denied" pages
+    carrying an error reference) are never treated as document content: the
+    requests path retries them with Playwright, and if the block page persists
+    the document is marked ``is_failing`` so the daily run stops polling it.
 
     Returns ``(cleaned_text, fetch_method_used)``.
     ``cleaned_text`` is *None* when fetching/extraction fails entirely.
@@ -756,19 +803,26 @@ def fetch_document_content(document: Document) -> tuple[str | None, str]:
 
                 html = response.content.decode("utf-8", errors="replace")
                 text = extract_text(html, extra_selectors=extra_selectors or None)
-                if text:
+                if _looks_like_bot_block(text):
+                    logger.warning(
+                        "fetch_document_content: %s returned an access-denied / "
+                        "bot-block page — will retry with Playwright",
+                        document.url,
+                    )
+                    use_playwright = True
+                elif text:
                     Document.objects.filter(pk=document.pk).update(
                         document_format=Document.DocumentFormat.HTML
                     )
                     document.document_format = Document.DocumentFormat.HTML
                     return text, Document.FetchMethod.REQUESTS
-
-                # Empty content — fall back to Playwright
-                logger.info(
-                    "fetch_document_content: empty content from %s — will retry with Playwright",
-                    document.url,
-                )
-                use_playwright = True
+                else:
+                    # Empty content — fall back to Playwright
+                    logger.info(
+                        "fetch_document_content: empty content from %s — will retry with Playwright",
+                        document.url,
+                    )
+                    use_playwright = True
 
         except requests.RequestException as exc:
             logger.error("Failed to fetch %s via requests: %s", document.url, exc)
@@ -788,6 +842,18 @@ def fetch_document_content(document: Document) -> tuple[str | None, str]:
                 challenge_timeout=challenge_timeout,
             )
             text = extract_text(html, extra_selectors=extra_selectors or None)
+            if _looks_like_bot_block(text):
+                logger.warning(
+                    "fetch_document_content: %s returned an access-denied / "
+                    "bot-block page — marking document as failing",
+                    document.url,
+                )
+                Document.objects.filter(pk=document.pk).update(
+                    is_failing=True,
+                    last_checked=timezone.now(),
+                )
+                document.is_failing = True
+                return None, Document.FetchMethod.PLAYWRIGHT
             Document.objects.filter(pk=document.pk).update(
                 document_format=Document.DocumentFormat.HTML
             )

@@ -251,10 +251,11 @@ All three jobs must pass before merging.
 - `country` FK → `Country` (nullable, `SET_NULL`)
 - `last_checked`, `last_changed` (DateTimeField, nullable)
 - `is_active` (BooleanField, default True)
-- `is_failing` (BooleanField, default False)
+- `is_failing` (BooleanField, default False; set automatically by `fetch_document_content` when a page is detected as an access-denied / bot-block interstitial)
 - `custom_selectors` — CSS selectors to strip before extraction, one per line
 - `fetch_config` — JSONField for Playwright options (`wait_for_selector`, `sleep_seconds`, `dismiss_selectors`, `challenge_timeout`)
 - The Playwright fetcher (`fetch_html_playwright`) waits for Cloudflare verification challenges to auto-resolve before extracting: it detects challenge pages via URL markers / Turnstile iframes / body text, polls every ~10s for a redirect (max `challenge_timeout` seconds, default 30) and raises `RuntimeError` when unresolved so challenge HTML is never persisted as a snapshot.
+- `fetch_document_content` also detects access-denied / bot-block interstitials (e.g. Akamai "Access Denied" pages with an error reference) via `_looks_like_bot_block` in `services.py`, which requires both a denial phrase and an error-reference marker (`errors.edgesuite.net`, `reference #`, …) to avoid misclassifying real documents. When the plain-HTTP path hits one it retries with Playwright; if the block page persists, the document is marked `is_failing` (no snapshot is stored, so the changing "Reference #" values never produce false change digests). Failing documents are skipped by the daily run and must be cleared manually in admin once access is restored.
 - Unique together: `(organization, document_type, url)`
 
 ### `DocumentSnapshot`
