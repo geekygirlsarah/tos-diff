@@ -1460,9 +1460,9 @@ class RecentChangesViewTest(TestCase):
         response = self.client.get(reverse("monitor:home"))
         self.assertContains(response, "No document changes detected")
 
-    def test_day_filter_defaults_to_14(self):
+    def test_day_filter_defaults_to_7(self):
         response = self.client.get(reverse("monitor:home"))
-        self.assertEqual(response.context["days"], 14)
+        self.assertEqual(response.context["days"], 7)
 
     def test_day_filter_accepts_valid_values(self):
         for days in (3, 7, 14, 30):
@@ -1471,11 +1471,11 @@ class RecentChangesViewTest(TestCase):
 
     def test_day_filter_rejects_invalid_value(self):
         response = self.client.get(reverse("monitor:home"), {"days": 99})
-        self.assertEqual(response.context["days"], 14)
+        self.assertEqual(response.context["days"], 7)
 
     def test_day_filter_rejects_non_integer(self):
         response = self.client.get(reverse("monitor:home"), {"days": "abc"})
-        self.assertEqual(response.context["days"], 14)
+        self.assertEqual(response.context["days"], 7)
 
     def test_day_filter_links_rendered(self):
         response = self.client.get(reverse("monitor:home"))

@@ -62,6 +62,7 @@ if TYPE_CHECKING:
 
 
 VALID_DAYS = (3, 7, 14, 30)
+DEFAULT_DAYS = 7
 
 
 def _tracked_organizations():
@@ -82,10 +83,10 @@ class RecentChangesView(ListView):
 
     def _get_days(self) -> int:
         try:
-            days = int(self.request.GET.get("days", 14))
+            days = int(self.request.GET.get("days", DEFAULT_DAYS))
         except (ValueError, TypeError):
-            days = 14
-        return days if days in VALID_DAYS else 14
+            days = DEFAULT_DAYS
+        return days if days in VALID_DAYS else DEFAULT_DAYS
 
     def _get_doc_type(self) -> str:
         doc_type = self.request.GET.get("type", "")
