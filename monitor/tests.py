@@ -1250,6 +1250,51 @@ class ImportMonitorDataCommandTest(TestCase):
         self.assertEqual(Document.objects.count(), 1)
         self.assertEqual(DocumentSnapshot.objects.count(), 0)
 
+    def _capture_import(self, data, **kwargs):
+        import io
+
+        from django.core.management import call_command
+
+        buffer = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "import.json"
+            path.write_text(json.dumps(data, cls=DjangoJSONEncoder), encoding="utf-8")
+            call_command("import_monitor_data", input=str(path), stdout=buffer, **kwargs)
+        return buffer.getvalue()
+
+    def test_replace_reports_wipe_progress(self):
+        data = self._export_data()
+        output = self._capture_import(data, replace=True)
+
+        self.assertIn("Removing existing monitored data...", output)
+        self.assertIn("  snapshots: 1 removed", output)
+        self.assertIn("  documents: 1 removed", output)
+        self.assertIn("  organizations: 2 removed", output)
+        self.assertIn("  tags: 1 removed", output)
+        self.assertIn("  languages: 1 removed", output)
+        self.assertIn("  countries: 1 removed", output)
+        self.assertEqual(Organization.objects.count(), 2)
+        self.assertEqual(Document.objects.count(), 1)
+
+    def test_snapshot_import_reports_progress(self):
+        data = self._export_data()
+        data["snapshots"] = [
+            {
+                "organization": "child-co",
+                "document_type": Document.DocumentType.PRIVACY_POLICY,
+                "url": "https://child.example/privacy",
+                "captured_at": f"2024-01-01T00:{i // 60:02d}:{i % 60:02d}+00:00",
+                "text_hash": f"hash{i:05d}",
+                "cleaned_text": f"snapshot number {i}",
+            }
+            for i in range(2200)
+        ]
+        self._wipe_monitor_data()
+        output = self._capture_import(data)
+
+        self.assertIn("  snapshots imported: 2,000 / 2,200 snapshots", output)
+        self.assertEqual(DocumentSnapshot.objects.count(), 2200)
+
     def test_replace_removes_existing_rows(self):
         data = self._export_data()
         stale_org = Organization.objects.create(

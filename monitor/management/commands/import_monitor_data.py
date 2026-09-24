@@ -41,6 +41,8 @@ from monitor.models import (
 )
 
 SNAPSHOT_BATCH_SIZE = 500
+SNAPSHOT_PROGRESS_BATCHES = 4
+ROW_PROGRESS_INTERVAL = 200
 
 
 class Command(BaseCommand):
@@ -105,13 +107,18 @@ class Command(BaseCommand):
 
     def _wipe_existing(self) -> None:
         """Delete all data the archive manages so import mirrors it exactly."""
-        DocumentSnapshot.objects.all().delete()
-        Document.objects.all().delete()
-        Organization.objects.all().delete()
-        Tag.objects.all().delete()
-        Language.objects.all().delete()
-        Country.objects.all().delete()
-        self.stdout.write(self.style.WARNING("Removed existing monitored data."))
+        self.stdout.write("Removing existing monitored data...")
+        for label, queryset in (
+            ("snapshots", DocumentSnapshot.objects.all()),
+            ("documents", Document.objects.all()),
+            ("organizations", Organization.objects.all()),
+            ("tags", Tag.objects.all()),
+            ("languages", Language.objects.all()),
+            ("countries", Country.objects.all()),
+        ):
+            count = queryset.count()
+            queryset.delete()
+            self.stdout.write(f"  {label}: {count} removed")
 
     def _import_lookup_tables(self, data: dict) -> dict:
         for rec in data.get("countries", []):
@@ -132,7 +139,8 @@ class Command(BaseCommand):
 
     def _import_organizations(self, data: dict) -> dict:
         self.organization_by_slug: dict[str, Organization] = {}
-        for rec in data.get("organizations", []):
+        records = data.get("organizations", [])
+        for index, rec in enumerate(records, start=1):
             organization, _ = Organization.objects.update_or_create(
                 slug=rec["slug"],
                 defaults={
@@ -143,6 +151,8 @@ class Command(BaseCommand):
                 },
             )
             self.organization_by_slug[rec["slug"]] = organization
+            if index % ROW_PROGRESS_INTERVAL == 0:
+                self.stdout.write(f"  organizations: {index:,} / {len(records):,}")
 
         for rec in data.get("organizations", []):
             organization = self.organization_by_slug[rec["slug"]]
@@ -164,7 +174,8 @@ class Command(BaseCommand):
 
     def _import_documents(self, data: dict) -> dict:
         self.document_by_key: dict[tuple, Document] = {}
-        for rec in data.get("documents", []):
+        records = data.get("documents", [])
+        for index, rec in enumerate(records, start=1):
             organization = self.organization_by_slug.get(rec["organization"])
             if organization is None:
                 self.stdout.write(
@@ -198,6 +209,8 @@ class Command(BaseCommand):
             )
             key = (rec["organization"], rec["document_type"], rec["url"])
             self.document_by_key[key] = document
+            if index % ROW_PROGRESS_INTERVAL == 0:
+                self.stdout.write(f"  documents: {index:,} / {len(records):,}")
 
         return {"documents": len(self.document_by_key)}
 
@@ -207,7 +220,9 @@ class Command(BaseCommand):
             key = (rec["organization"], rec["document_type"], rec["url"])
             grouped[key].append(rec)
 
+        total = sum(len(rows) for rows in grouped.values())
         imported = 0
+        batch_no = 0
         for key, rows in grouped.items():
             document = self.document_by_key.get(key)
             if document is None:
@@ -252,6 +267,9 @@ class Command(BaseCommand):
                 created = DocumentSnapshot.objects.bulk_create(batch)
                 self._restore_captured_at(list(zip(created, captured_ats, strict=True)))
                 imported += len(created)
+                batch_no += 1
+                if batch_no % SNAPSHOT_PROGRESS_BATCHES == 0:
+                    self.stdout.write(f"  snapshots imported: {imported:,} / {total:,} snapshots")
 
         return imported
 
