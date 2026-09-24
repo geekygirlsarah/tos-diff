@@ -2748,6 +2748,15 @@ class SendWeeklyDigestTaskTest(TestCase):
         self.assertFalse(PendingNotification.objects.filter(user=weekly).exists())
 
 
+class ViewModuleAnnotationsTest(TestCase):
+    def test_annotations_resolve_on_python_312(self):
+        from monitor import views
+
+        for func in (views._get_or_create_user_by_email, views.verify_login_code):
+            annotations = func.__annotations__  # PEP 649 resolution — may NameError
+            self.assertIn("return", annotations)
+
+
 class BeatScheduleDigestTest(TestCase):
     """Beat runs the digest tasks on schedule."""
 
