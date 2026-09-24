@@ -50,7 +50,7 @@ services:
     plan: 1c-2g
     region: ohio
     schedule: "0 2 * * *"  # 02:00 UTC daily
-    dockerCommand: manage fetch_documents
+    dockerCommand: python manage.py fetch_documents
     envVars:
       - key: DJANGO_SECRET_KEY
         sync: false  # set/update on the service in the Render dashboard
