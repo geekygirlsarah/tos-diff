@@ -158,12 +158,14 @@ Superusers get a custom management area (in addition to Django admin) under `/ma
 - `manage_documents`, `manage_document_create`, `manage_document_update` — CRUD for `Document`; `manage_document_create_for_organization` (`/manage/organizations/<pk>/documents/add/`) preselects the organization; `manage_document_delete`; `manage_document_check` (POST) triggers `check_document.delay(document.pk)` immediately
 - `manage_suggestions`, `manage_suggestion_approve`, `manage_suggestion_reject` — review queue; approving calls `Suggestion.create_organization_and_document()` and marks the suggestion approved; `manage_suggestion_delete`. The list view annotates `is_duplicate` (an `Organization` already exists with the same `website_url`) and the review page warns accordingly. Approving/rejecting emails the submitter via `send_suggestion_review_email()` (skipped when no `contact_email`).
 - `manage_tags`, `manage_tag_create`, `manage_tag_update`, `manage_tag_delete` — CRUD for `Tag`
+- `manage_countries`, `manage_country_create`, `manage_country_update`, `manage_country_delete` — CRUD for `Country` (deleting clears `Document.country`, `SET_NULL`)
+- `manage_languages`, `manage_language_create`, `manage_language_update`, `manage_language_delete` — CRUD for `Language` (deletion is blocked with an error message while any `Document.language` references it, `PROTECT`)
 - `manage_attention` (`/manage/attention/`) — needs-attention panel (failing/inactive/never-checked documents)
 - `manage_users` (`/manage/users/`) — user overview with search, pagination, and `document_subscription_count` / `organization_subscription_count` annotations
 
 Conventions:
 - Every view subclasses `SuperuserRequiredMixin` in `monitor/views.py` (redirects anonymous users to login, returns 403 for non-superusers).
-- Forms live in `monitor/forms.py` (`OrganizationForm`, `DocumentForm`, `TagForm`, `SuggestionReviewForm`); they style fields with `form-control`/`form-select` and use the shared `_field.html` partial in templates.
+- Forms live in `monitor/forms.py` (`OrganizationForm`, `DocumentForm`, `TagForm`, `CountryForm`, `LanguageForm`, `SuggestionReviewForm`); they style fields with `form-control`/`form-select` and use the shared `_field.html` partial in templates.
 - Templates live in `templates/monitor/manage/`; they are responsive (`.table-responsive` wrappers, `flex-wrap`, `col-*` grids). Edit forms show a "Delete" link (and document forms a "Check now" button) when editing an existing object.
 - The navbar shows an "Admin" link only to superusers.
 - Keep URL names `manage_*` and prefix all routes with `/manage/`.

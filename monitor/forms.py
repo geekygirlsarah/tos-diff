@@ -4,7 +4,15 @@ import json
 
 from django import forms
 
-from .models import Document, NotificationPreference, Organization, Suggestion, Tag
+from .models import (
+    Country,
+    Document,
+    Language,
+    NotificationPreference,
+    Organization,
+    Suggestion,
+    Tag,
+)
 
 
 class SuggestionForm(forms.ModelForm):
@@ -131,13 +139,65 @@ class TagForm(forms.ModelForm):
 
     class Meta:
         model = Tag
-        fields = ["name"]
+        fields = ["name", "slug"]
         widgets = {
             "name": forms.TextInput(
                 attrs={
                     "class": "form-control",
                     "autofocus": True,
                     "placeholder": "e.g. Governance",
+                }
+            ),
+            "slug": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "auto-filled from name",
+                }
+            ),
+        }
+
+
+class CountryForm(forms.ModelForm):
+    """Superuser form for creating/editing countries."""
+
+    class Meta:
+        model = Country
+        fields = ["name", "code"]
+        widgets = {
+            "name": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "autofocus": True,
+                    "placeholder": "e.g. United States",
+                }
+            ),
+            "code": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "e.g. US",
+                }
+            ),
+        }
+
+
+class LanguageForm(forms.ModelForm):
+    """Superuser form for creating/editing languages."""
+
+    class Meta:
+        model = Language
+        fields = ["name", "code"]
+        widgets = {
+            "name": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "autofocus": True,
+                    "placeholder": "e.g. English",
+                }
+            ),
+            "code": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "e.g. en",
                 }
             ),
         }

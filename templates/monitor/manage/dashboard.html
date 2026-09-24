@@ -35,6 +35,20 @@
   </div>
   <div class="col-sm-6 col-xl-3">
     <div class="td-card p-4 text-center h-100">
+      <div class="h3 fw-bold mb-0" style="color: var(--td-primary-dark);">{{ country_count }}</div>
+      <div class="small" style="color: var(--td-text-muted);">Countries</div>
+      <a class="btn btn-sm td-btn-outline mt-3" href="{% url 'monitor:manage_countries' %}">Manage</a>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="td-card p-4 text-center h-100">
+      <div class="h3 fw-bold mb-0" style="color: var(--td-primary-dark);">{{ language_count }}</div>
+      <div class="small" style="color: var(--td-text-muted);">Languages</div>
+      <a class="btn btn-sm td-btn-outline mt-3" href="{% url 'monitor:manage_languages' %}">Manage</a>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="td-card p-4 text-center h-100">
       <div class="h3 fw-bold mb-0" style="color: var(--td-primary-dark);">Tags</div>
       <div class="small" style="color: var(--td-text-muted);">Categorization labels</div>
       <a class="btn btn-sm td-btn-outline mt-3" href="{% url 'monitor:manage_tags' %}">Manage</a>
@@ -50,6 +64,8 @@
     <a class="btn td-btn-primary" href="{% url 'monitor:manage_organization_create' %}">Add an organization</a>
     <a class="btn td-btn-outline" href="{% url 'monitor:manage_document_create' %}">Add a document</a>
     <a class="btn td-btn-outline" href="{% url 'monitor:manage_tag_create' %}">Add a tag</a>
+    <a class="btn td-btn-outline" href="{% url 'monitor:manage_country_create' %}">Add a country</a>
+    <a class="btn td-btn-outline" href="{% url 'monitor:manage_language_create' %}">Add a language</a>
     <a class="btn td-btn-outline" href="{% url 'monitor:manage_attention' %}">Needs attention</a>
     <a class="btn td-btn-outline" href="{% url 'monitor:manage_users' %}">Users</a>
     <a class="btn td-btn-outline" href="/admin/">Open Django admin</a>

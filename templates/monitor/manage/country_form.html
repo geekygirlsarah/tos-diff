@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page_title }} — TosDiff{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-4">
+  <div>
+    <h1 class="h3 mb-0">{{ page_title }}</h1>
+    <p class="mb-0 small" style="color: var(--td-text-muted);">
+      <a href="{% url 'monitor:manage_dashboard' %}">Manage</a> /
+      <a href="{% url 'monitor:manage_countries' %}">Countries</a> / {{ page_title }}
+    </p>
+  </div>
+  <a class="btn td-btn-outline" href="{% url 'monitor:manage_countries' %}">Back to list</a>
+</div>
+
+<div class="row justify-content-center">
+  <div class="col-lg-6">
+    <div class="td-card p-4 p-md-5">
+      {% if form.errors %}
+      <div class="alert alert-danger mb-4" role="alert">
+        <strong class="d-block mb-1">Something needs your attention</strong>
+        Please correct the errors highlighted below.
+      </div>
+      {% endif %}
+
+      <form method="post" novalidate>
+        {% csrf_token %}
+        <div class="row g-4">
+          {% include "monitor/manage/_field.html" with field=form.name col_class="col-12" %}
+          {% include "monitor/manage/_field.html" with field=form.code col_class="col-12" %}
+          <div class="col-12 d-flex flex-wrap gap-2">
+            <button type="submit" class="btn td-btn-primary">Save country</button>
+            <a href="{% url 'monitor:manage_countries' %}" class="btn td-btn-outline">Cancel</a>
+            {% if object %}
+            <a href="{% url 'monitor:manage_country_delete' object.pk %}"
+               class="btn td-btn-outline ms-auto" style="color:#991b1b;">Delete country</a>
+            {% endif %}
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

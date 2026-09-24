@@ -33,6 +33,16 @@
           <div class="invalid-feedback d-block">{{ error }}</div>
           {% endfor %}
         </div>
+        <div class="mb-3">
+          <label class="form-label fw-semibold" for="{{ form.slug.id_for_label }}">{{ form.slug.label }}</label>
+          {{ form.slug }}
+          {% if form.slug.help_text %}
+          <div class="form-text">{{ form.slug.help_text }}</div>
+          {% endif %}
+          {% for error in form.slug.errors %}
+          <div class="invalid-feedback d-block">{{ error }}</div>
+          {% endfor %}
+        </div>
         <div class="d-flex flex-wrap gap-2">
           <button type="submit" class="btn td-btn-primary">Save tag</button>
           <a href="{% url 'monitor:manage_tags' %}" class="btn td-btn-outline">Cancel</a>

@@ -12,6 +12,7 @@ from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.contrib.auth.views import LogoutView  # noqa: F401 – re-exported for urls
 from django.core import signing
 from django.db.models import Count, Exists, OuterRef, Q
+from django.db.models.deletion import ProtectedError
 from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse_lazy
@@ -23,8 +24,10 @@ from django.views.generic.edit import CreateView, DeleteView, FormView, UpdateVi
 
 from .forms import (
     CodeLoginForm,
+    CountryForm,
     DocumentForm,
     EmailLoginForm,
+    LanguageForm,
     NotificationPreferenceForm,
     OrganizationForm,
     SuggestionForm,
@@ -32,9 +35,11 @@ from .forms import (
     TagForm,
 )
 from .models import (
+    Country,
     Document,
     DocumentSnapshot,
     DocumentSubscription,
+    Language,
     LoginCode,
     NotificationPreference,
     Organization,
@@ -572,6 +577,8 @@ class ManageDashboardView(SuperuserRequiredMixin, TemplateView):
             status=Suggestion.Status.PENDING
         ).count()
         context["approved_document_count"] = _tracked_organizations().count()
+        context["country_count"] = Country.objects.count()
+        context["language_count"] = Language.objects.count()
         return context
 
 
@@ -792,6 +799,82 @@ class ManageTagUpdateView(SuperuserRequiredMixin, UpdateView):
         return context
 
 
+class ManageCountryListView(SuperuserRequiredMixin, ListView):
+    """List all countries available for documents."""
+
+    model = Country
+    template_name = "monitor/manage/country_list.html"
+    context_object_name = "countries"
+    paginate_by = 50
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Manage countries"
+        return context
+
+
+class ManageCountryCreateView(SuperuserRequiredMixin, CreateView):
+    model = Country
+    form_class = CountryForm
+    template_name = "monitor/manage/country_form.html"
+    success_url = reverse_lazy("monitor:manage_countries")
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Add country"
+        return context
+
+
+class ManageCountryUpdateView(SuperuserRequiredMixin, UpdateView):
+    model = Country
+    form_class = CountryForm
+    template_name = "monitor/manage/country_form.html"
+    success_url = reverse_lazy("monitor:manage_countries")
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = f"Edit country: {self.object.name}"
+        return context
+
+
+class ManageLanguageListView(SuperuserRequiredMixin, ListView):
+    """List all languages available for documents."""
+
+    model = Language
+    template_name = "monitor/manage/language_list.html"
+    context_object_name = "languages"
+    paginate_by = 50
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Manage languages"
+        return context
+
+
+class ManageLanguageCreateView(SuperuserRequiredMixin, CreateView):
+    model = Language
+    form_class = LanguageForm
+    template_name = "monitor/manage/language_form.html"
+    success_url = reverse_lazy("monitor:manage_languages")
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Add language"
+        return context
+
+
+class ManageLanguageUpdateView(SuperuserRequiredMixin, UpdateView):
+    model = Language
+    form_class = LanguageForm
+    template_name = "monitor/manage/language_form.html"
+    success_url = reverse_lazy("monitor:manage_languages")
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = f"Edit language: {self.object.name}"
+        return context
+
+
 class ManageAttentionView(SuperuserRequiredMixin, TemplateView):
     """Surfaces documents that need attention (failing, never checked, no snapshots)."""
 
@@ -905,6 +988,54 @@ class ManageTagDeleteView(SuperuserRequiredMixin, DeleteView):
             "The tag will be removed from all organizations it is attached to.",
         ]
         return context
+
+
+class ManageCountryDeleteView(SuperuserRequiredMixin, DeleteView):
+    model = Country
+    template_name = "monitor/manage/confirm_delete.html"
+    success_url = reverse_lazy("monitor:manage_countries")
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = f"Delete country: {self.object.name}"
+        context["cancel_url"] = reverse_lazy("monitor:manage_countries")
+        document_count = Document.objects.filter(country=self.object).count()
+        context["warnings"] = [
+            f"{document_count} document(s) currently reference this country. "
+            "Their country field will be cleared.",
+        ]
+        return context
+
+
+class ManageLanguageDeleteView(SuperuserRequiredMixin, DeleteView):
+    model = Language
+    template_name = "monitor/manage/confirm_delete.html"
+    success_url = reverse_lazy("monitor:manage_languages")
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = f"Delete language: {self.object.name}"
+        context["cancel_url"] = reverse_lazy("monitor:manage_languages")
+        document_count = Document.objects.filter(language=self.object).count()
+        if document_count:
+            context["warnings"] = [
+                f"{document_count} document(s) reference this language. "
+                "Deletion is blocked until those documents are reassigned.",
+            ]
+        return context
+
+    def form_valid(self, form) -> HttpResponse:
+        success_url = self.get_success_url()
+        try:
+            self.object.delete()
+        except ProtectedError:
+            messages.error(
+                self.request,
+                f'"{self.object}" is referenced by documents and cannot be deleted.',
+            )
+        else:
+            messages.success(self.request, f'Deleted language "{self.object}".')
+        return redirect(success_url)
 
 
 class ManageSuggestionDeleteView(SuperuserRequiredMixin, DeleteView):

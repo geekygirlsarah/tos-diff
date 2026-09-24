@@ -1950,6 +1950,8 @@ class ManageAccessControlTest(TestCase):
         self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
         self.doc = Document.objects.create(organization=self.org, url="https://acme.com/tos")
         self.tag = Tag.objects.create(name="Fintech")
+        self.country = Country.objects.create(name="France", code="FR")
+        self.language = Language.objects.create(name="Spanish", code="es")
         self.suggestion = Suggestion.objects.create(
             organization_name="Globex",
             website_url="https://globex.example.com",
@@ -1977,6 +1979,14 @@ class ManageAccessControlTest(TestCase):
             reverse("monitor:manage_tag_create"),
             reverse("monitor:manage_tag_update", args=[self.tag.pk]),
             reverse("monitor:manage_tag_delete", args=[self.tag.pk]),
+            reverse("monitor:manage_countries"),
+            reverse("monitor:manage_country_create"),
+            reverse("monitor:manage_country_update", args=[self.country.pk]),
+            reverse("monitor:manage_country_delete", args=[self.country.pk]),
+            reverse("monitor:manage_languages"),
+            reverse("monitor:manage_language_create"),
+            reverse("monitor:manage_language_update", args=[self.language.pk]),
+            reverse("monitor:manage_language_delete", args=[self.language.pk]),
             reverse("monitor:manage_attention"),
             reverse("monitor:manage_users"),
         ]
@@ -2031,11 +2041,15 @@ class ManageDashboardTest(TestCase):
             website_url="https://globex.example.com",
             document_url="https://globex.example.com/tos",
         )
+        Country.objects.create(name="France", code="FR")
+        Language.objects.get_or_create(code="es", defaults={"name": "Spanish"})
         response = self.client.get(reverse("monitor:manage_dashboard"))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["organization_count"], 1)
         self.assertEqual(response.context["document_count"], 1)
         self.assertEqual(response.context["pending_suggestion_count"], 1)
+        self.assertEqual(response.context["country_count"], 1)
+        self.assertEqual(response.context["language_count"], Language.objects.count())
 
 
 class ManageOrganizationViewsTest(TestCase):
@@ -2234,6 +2248,20 @@ class ManageTagViewsTest(TestCase):
         tag = Tag.objects.get(name="Open Source")
         self.assertEqual(tag.slug, "open-source")
 
+    def test_create_tag_with_custom_slug(self):
+        response = self.client.post(
+            reverse("monitor:manage_tag_create"), {"name": "Open Banking", "slug": "banking"}
+        )
+        self.assertRedirects(response, reverse("monitor:manage_tags"))
+        self.assertEqual(Tag.objects.get(name="Open Banking").slug, "banking")
+
+    def test_create_tag_auto_generates_slug_when_blank(self):
+        response = self.client.post(
+            reverse("monitor:manage_tag_create"), {"name": "Regulatory", "slug": ""}
+        )
+        self.assertRedirects(response, reverse("monitor:manage_tags"))
+        self.assertEqual(Tag.objects.get(name="Regulatory").slug, "regulatory")
+
     def test_update_tag(self):
         response = self.client.post(
             reverse("monitor:manage_tag_update", args=[self.tag.pk]), {"name": "Fintech & Banking"}
@@ -2241,6 +2269,97 @@ class ManageTagViewsTest(TestCase):
         self.assertRedirects(response, reverse("monitor:manage_tags"))
         self.tag.refresh_from_db()
         self.assertEqual(self.tag.name, "Fintech & Banking")
+
+    def test_update_form_includes_slug(self):
+        self.tag.slug = "fintech"
+        self.tag.save()
+        response = self.client.get(reverse("monitor:manage_tag_update", args=[self.tag.pk]))
+        self.assertContains(response, 'name="slug"')
+        self.assertContains(response, 'value="fintech"')
+
+    def test_update_tag_can_set_slug(self):
+        response = self.client.post(
+            reverse("monitor:manage_tag_update", args=[self.tag.pk]),
+            {"name": "Fintech", "slug": "fintech-banking"},
+        )
+        self.assertRedirects(response, reverse("monitor:manage_tags"))
+        self.tag.refresh_from_db()
+        self.assertEqual(self.tag.slug, "fintech-banking")
+
+
+class ManageCountryViewsTest(TestCase):
+    """Superusers can CRUD countries via the management area."""
+
+    def setUp(self):
+        _login_as_superuser(self.client)
+        self.country = Country.objects.create(name="France", code="FR")
+
+    def test_list_shows_countries(self):
+        response = self.client.get(reverse("monitor:manage_countries"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "France")
+
+    def test_create_country(self):
+        response = self.client.post(
+            reverse("monitor:manage_country_create"), {"name": "Spain", "code": "ES"}
+        )
+        self.assertRedirects(response, reverse("monitor:manage_countries"))
+        self.assertTrue(Country.objects.filter(name="Spain", code="ES").exists())
+
+    def test_create_country_rejects_duplicate_code(self):
+        response = self.client.post(
+            reverse("monitor:manage_country_create"), {"name": "France Again", "code": "FR"}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Country.objects.filter(name="France Again").exists())
+
+    def test_update_country(self):
+        response = self.client.post(
+            reverse("monitor:manage_country_update", args=[self.country.pk]),
+            {"name": "French Republic", "code": "FR"},
+        )
+        self.assertRedirects(response, reverse("monitor:manage_countries"))
+        self.country.refresh_from_db()
+        self.assertEqual(self.country.name, "French Republic")
+
+    def test_update_form_prefilled(self):
+        response = self.client.get(reverse("monitor:manage_country_update", args=[self.country.pk]))
+        self.assertContains(response, 'value="France"')
+
+
+class ManageLanguageViewsTest(TestCase):
+    """Superusers can CRUD languages via the management area."""
+
+    def setUp(self):
+        _login_as_superuser(self.client)
+        self.language = Language.objects.create(name="Spanish", code="es")
+
+    def test_list_shows_languages(self):
+        response = self.client.get(reverse("monitor:manage_languages"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Spanish")
+
+    def test_create_language(self):
+        response = self.client.post(
+            reverse("monitor:manage_language_create"), {"name": "German", "code": "de"}
+        )
+        self.assertRedirects(response, reverse("monitor:manage_languages"))
+        self.assertTrue(Language.objects.filter(name="German", code="de").exists())
+
+    def test_update_language(self):
+        response = self.client.post(
+            reverse("monitor:manage_language_update", args=[self.language.pk]),
+            {"name": "Castilian Spanish", "code": "es"},
+        )
+        self.assertRedirects(response, reverse("monitor:manage_languages"))
+        self.language.refresh_from_db()
+        self.assertEqual(self.language.name, "Castilian Spanish")
+
+    def test_update_form_prefilled(self):
+        response = self.client.get(
+            reverse("monitor:manage_language_update", args=[self.language.pk])
+        )
+        self.assertContains(response, 'value="Spanish"')
 
 
 class ManageDeleteViewsTest(TestCase):
@@ -2251,6 +2370,8 @@ class ManageDeleteViewsTest(TestCase):
         self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
         self.doc = Document.objects.create(organization=self.org, url="https://acme.com/tos")
         self.tag = Tag.objects.create(name="Fintech")
+        self.country = Country.objects.create(name="France", code="FR")
+        self.language = Language.objects.create(name="German", code="de")
         self.suggestion = Suggestion.objects.create(
             organization_name="Globex",
             website_url="https://globex.example.com",
@@ -2281,6 +2402,39 @@ class ManageDeleteViewsTest(TestCase):
         response = self.client.post(reverse("monitor:manage_tag_delete", args=[self.tag.pk]))
         self.assertRedirects(response, reverse("monitor:manage_tags"))
         self.assertFalse(Tag.objects.filter(pk=self.tag.pk).exists())
+
+    def test_delete_country(self):
+        response = self.client.post(
+            reverse("monitor:manage_country_delete", args=[self.country.pk])
+        )
+        self.assertRedirects(response, reverse("monitor:manage_countries"))
+        self.assertFalse(Country.objects.filter(pk=self.country.pk).exists())
+
+    def test_delete_country_clears_document_references(self):
+        self.doc.country = self.country
+        self.doc.save()
+        response = self.client.post(
+            reverse("monitor:manage_country_delete", args=[self.country.pk])
+        )
+        self.assertRedirects(response, reverse("monitor:manage_countries"))
+        self.doc.refresh_from_db()
+        self.assertIsNone(self.doc.country)
+
+    def test_delete_language(self):
+        response = self.client.post(
+            reverse("monitor:manage_language_delete", args=[self.language.pk])
+        )
+        self.assertRedirects(response, reverse("monitor:manage_languages"))
+        self.assertFalse(Language.objects.filter(pk=self.language.pk).exists())
+
+    def test_delete_language_in_use_is_blocked(self):
+        self.doc.language = self.language
+        self.doc.save()
+        response = self.client.post(
+            reverse("monitor:manage_language_delete", args=[self.language.pk])
+        )
+        self.assertRedirects(response, reverse("monitor:manage_languages"))
+        self.assertTrue(Language.objects.filter(pk=self.language.pk).exists())
 
     def test_delete_suggestion(self):
         response = self.client.post(
