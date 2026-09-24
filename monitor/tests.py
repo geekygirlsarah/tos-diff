@@ -7,11 +7,11 @@ Run with:  python manage.py test monitor
 import json
 import logging
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import requests
-from django.conf import settings
 from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.core import mail
@@ -1030,56 +1030,6 @@ class CheckDocumentTaskTest(TestCase):
         self.assertIn("playwright", result["error"])
 
 
-class CheckAllDocumentsTaskTest(TestCase):
-    def setUp(self):
-        org = Organization.objects.create(name="Acme", website_url="https://acme.com")
-        self.doc1 = Document.objects.create(organization=org, url="https://acme.com/tos")
-        self.doc2 = Document.objects.create(
-            organization=org,
-            url="https://acme.com/privacy",
-            document_type=Document.DocumentType.PRIVACY_POLICY,
-        )
-        self.doc_inactive = Document.objects.create(
-            organization=org,
-            url="https://acme.com/cookie",
-            document_type=Document.DocumentType.COOKIE_POLICY,
-            is_active=False,
-        )
-
-    @patch("monitor.tasks.check_document.delay")
-    def test_enqueues_only_active_documents(self, mock_delay):
-        from monitor.tasks import check_all_documents
-
-        result = check_all_documents()
-        self.assertEqual(result["enqueued"], 2)
-        called_ids = {call.args[0] for call in mock_delay.call_args_list}
-        self.assertIn(self.doc1.pk, called_ids)
-        self.assertIn(self.doc2.pk, called_ids)
-        self.assertNotIn(self.doc_inactive.pk, called_ids)
-
-    @patch("monitor.tasks.check_document.delay")
-    def test_returns_enqueued_count(self, mock_delay):
-        from monitor.tasks import check_all_documents
-
-        result = check_all_documents()
-        self.assertEqual(result["enqueued"], mock_delay.call_count)
-
-
-class CheckAllDocumentsShufflingTest(TestCase):
-    def setUp(self):
-        org = Organization.objects.create(name="Acme", website_url="https://acme.com")
-        for i in range(5):
-            Document.objects.create(organization=org, url=f"https://acme.com/{i}")
-
-    @patch("monitor.tasks.random.shuffle")
-    @patch("monitor.tasks.check_document.delay")
-    def test_shuffles_ids(self, mock_delay, mock_shuffle):
-        from monitor.tasks import check_all_documents
-
-        check_all_documents()
-        self.assertTrue(mock_shuffle.called)
-
-
 class FetchDocumentsCommandTest(TestCase):
     def setUp(self):
         org = Organization.objects.create(name="Acme", website_url="https://acme.com")
@@ -1103,6 +1053,91 @@ class FetchDocumentsCommandTest(TestCase):
         mock_fetch.return_value = (MagicMock(), False)
         call_command("fetch_documents", shuffle=False)
         self.assertFalse(mock_shuffle.called)
+
+
+class FetchDocumentsNotificationTest(TestCase):
+    """The fetch command queues change notifications when a snapshot is created."""
+
+    def setUp(self):
+        org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.doc = Document.objects.create(organization=org, url="https://acme.com/tos")
+
+    @patch("monitor.management.commands.fetch_documents.dispatch_change_notifications")
+    @patch("monitor.management.commands.fetch_documents.fetch_and_snapshot")
+    def test_dispatches_notifications_when_changed(self, mock_fas, mock_dispatch):
+        from django.core.management import call_command
+
+        mock_snapshot = MagicMock()
+        mock_fas.return_value = (mock_snapshot, True)
+        call_command("fetch_documents")
+        mock_dispatch.assert_called_once_with(self.doc, mock_snapshot)
+
+    @patch("monitor.management.commands.fetch_documents.dispatch_change_notifications")
+    @patch("monitor.management.commands.fetch_documents.fetch_and_snapshot")
+    def test_no_dispatch_when_unchanged(self, mock_fas, mock_dispatch):
+        from django.core.management import call_command
+
+        mock_fas.return_value = (None, False)
+        call_command("fetch_documents")
+        mock_dispatch.assert_not_called()
+
+    @patch("monitor.management.commands.fetch_documents.dispatch_change_notifications")
+    @patch("monitor.management.commands.fetch_documents.fetch_and_snapshot")
+    def test_skip_notifications_flag(self, mock_fas, mock_dispatch):
+        from django.core.management import call_command
+
+        mock_snapshot = MagicMock()
+        mock_fas.return_value = (mock_snapshot, True)
+        call_command("fetch_documents", skip_notifications=True)
+        mock_dispatch.assert_not_called()
+
+
+class FetchDocumentsDigestTest(TestCase):
+    """The fetch command sends daily digests and weekly digests on the weekly day."""
+
+    def setUp(self):
+        org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        Document.objects.create(organization=org, url="https://acme.com/tos")
+
+    @patch("monitor.management.commands.fetch_documents.send_daily_digests")
+    @patch("monitor.management.commands.fetch_documents.fetch_and_snapshot")
+    def test_sends_daily_digests_every_run(self, mock_fas, mock_daily):
+        from django.core.management import call_command
+
+        mock_fas.return_value = (None, False)
+        call_command("fetch_documents")
+        mock_daily.assert_called_once()
+
+    @patch("monitor.management.commands.fetch_documents.is_weekly_digest_day", return_value=True)
+    @patch("monitor.management.commands.fetch_documents.send_weekly_digests")
+    @patch("monitor.management.commands.fetch_documents.send_daily_digests")
+    @patch("monitor.management.commands.fetch_documents.fetch_and_snapshot")
+    def test_sends_weekly_digests_on_weekly_day(self, mock_fas, mock_daily, mock_weekly, mock_day):
+        from django.core.management import call_command
+
+        mock_fas.return_value = (None, False)
+        call_command("fetch_documents")
+        mock_weekly.assert_called_once()
+
+    @patch("monitor.management.commands.fetch_documents.is_weekly_digest_day", return_value=False)
+    @patch("monitor.management.commands.fetch_documents.send_weekly_digests")
+    @patch("monitor.management.commands.fetch_documents.send_daily_digests")
+    @patch("monitor.management.commands.fetch_documents.fetch_and_snapshot")
+    def test_skips_weekly_digests_on_other_days(self, mock_fas, mock_daily, mock_weekly, mock_day):
+        from django.core.management import call_command
+
+        mock_fas.return_value = (None, False)
+        call_command("fetch_documents")
+        mock_weekly.assert_not_called()
+
+    @patch("monitor.management.commands.fetch_documents.send_daily_digests")
+    @patch("monitor.management.commands.fetch_documents.fetch_and_snapshot")
+    def test_skip_digests_flag(self, mock_fas, mock_daily):
+        from django.core.management import call_command
+
+        mock_fas.return_value = (None, False)
+        call_command("fetch_documents", skip_digests=True)
+        mock_daily.assert_not_called()
 
 
 class ExportMonitorDataCommandTest(TestCase):
@@ -2372,7 +2407,7 @@ class SendChangeNotificationsTaskTest(TestCase):
 
 
 class CheckDocumentNotificationDispatchTest(TestCase):
-    """check_document dispatches a notification task when a snapshot is created."""
+    """check_document queues a change notification when a new snapshot is created."""
 
     def setUp(self):
         org = Organization.objects.create(name="Acme", website_url="https://acme.com")
@@ -2386,27 +2421,27 @@ class CheckDocumentNotificationDispatchTest(TestCase):
         mock_snapshot = MagicMock()
         mock_fas.return_value = (mock_snapshot, True)
         DocumentSubscription.objects.create(user=self.user, document=self.doc)
-        with patch("monitor.tasks.send_change_notifications.delay") as mock_delay:
+        with patch("monitor.tasks.send_change_notifications") as mock_notify:
             check_document(self.doc.pk)
-        mock_delay.assert_called_once_with(self.doc.pk, mock_snapshot.pk)
+        mock_notify.assert_called_once_with(self.doc.pk, mock_snapshot.pk)
 
     @patch("monitor.tasks.fetch_and_snapshot")
     def test_no_dispatch_when_no_subscribers(self, mock_fas):
         from monitor.tasks import check_document
 
         mock_fas.return_value = (MagicMock(), True)
-        with patch("monitor.tasks.send_change_notifications.delay") as mock_delay:
+        with patch("monitor.tasks.send_change_notifications") as mock_notify:
             check_document(self.doc.pk)
-        mock_delay.assert_not_called()
+        mock_notify.assert_not_called()
 
     @patch("monitor.tasks.fetch_and_snapshot")
     def test_no_dispatch_when_unchanged(self, mock_fas):
         from monitor.tasks import check_document
 
         mock_fas.return_value = (None, False)
-        with patch("monitor.tasks.send_change_notifications.delay") as mock_delay:
+        with patch("monitor.tasks.send_change_notifications") as mock_notify:
             check_document(self.doc.pk)
-        mock_delay.assert_not_called()
+        mock_notify.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2933,16 +2968,16 @@ class ManageDocumentCheckTest(TestCase):
         self.doc = Document.objects.create(organization=self.org, url="https://acme.com/tos")
 
     @patch("monitor.views.check_document")
-    def test_check_now_enqueues_fetch(self, mock_task):
+    def test_check_now_fetches_document(self, mock_task):
         response = self.client.post(reverse("monitor:manage_document_check", args=[self.doc.pk]))
         self.assertRedirects(response, reverse("monitor:manage_documents"))
-        mock_task.delay.assert_called_once_with(self.doc.pk)
+        mock_task.assert_called_once_with(self.doc.pk)
 
     @patch("monitor.views.check_document")
     def test_check_now_announces_success(self, mock_task):
         self.client.post(reverse("monitor:manage_document_check", args=[self.doc.pk]))
         response = self.client.get(reverse("monitor:manage_documents"))
-        self.assertContains(response, "Fetch queued for Terms of Service")
+        self.assertContains(response, "Fetched Terms of Service")
 
     def test_check_now_denied_to_regular_user(self):
         get_user_model().objects.create_user(username="bob", email="bob@example.com", password="x")
@@ -3413,13 +3448,30 @@ class ViewModuleAnnotationsTest(TestCase):
             self.assertIn("return", annotations)
 
 
-class BeatScheduleDigestTest(TestCase):
-    """Beat runs the digest tasks on schedule."""
+class WeeklyDigestDayTest(TestCase):
+    """The cron job sends weekly digests only on the configured weekday."""
 
-    def test_beat_schedule_contains_digest_tasks(self):
-        tasks = {entry["task"] for entry in settings.CELERY_BEAT_SCHEDULE.values()}
-        self.assertIn("monitor.tasks.send_daily_digests", tasks)
-        self.assertIn("monitor.tasks.send_weekly_digests", tasks)
+    def setUp(self):
+        self.monday = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
+        self.tuesday = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
+
+    @override_settings(WEEKLY_DIGEST_WEEKDAY=1)
+    def test_monday_is_the_weekly_digest_day(self):
+        from monitor.tasks import is_weekly_digest_day
+
+        self.assertTrue(is_weekly_digest_day(self.monday))
+
+    @override_settings(WEEKLY_DIGEST_WEEKDAY=1)
+    def test_tuesday_is_not_the_weekly_digest_day(self):
+        from monitor.tasks import is_weekly_digest_day
+
+        self.assertFalse(is_weekly_digest_day(self.tuesday))
+
+    @override_settings(WEEKLY_DIGEST_WEEKDAY=6)
+    def test_weekday_comes_from_settings(self):
+        from monitor.tasks import is_weekly_digest_day
+
+        self.assertFalse(is_weekly_digest_day(self.tuesday))
 
 
 class HttpsOnlyProductionTest(TestCase):

@@ -25,8 +25,6 @@ RUN pip install --upgrade pip && \
         "lxml>=5.0" \
         "pdfplumber>=0.11" \
         "psycopg[binary]>=3.1" \
-        "celery>=5.3" \
-        "redis>=5.0" \
         "gunicorn>=22.0" \
         "playwright>=1.40"
 

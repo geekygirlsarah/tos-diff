@@ -939,8 +939,8 @@ class ManageDocumentCheckView(SuperuserRequiredMixin, View):
 
     def post(self, request, *args, **kwargs) -> HttpResponse:
         document = get_object_or_404(Document, pk=kwargs["pk"])
-        check_document.delay(document.pk)
-        messages.success(request, f"Fetch queued for {document.display_name}.")
+        check_document(document.pk)
+        messages.success(request, f"Fetched {document.display_name}.")
         return redirect("monitor:manage_documents")
 
 

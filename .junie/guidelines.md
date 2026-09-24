@@ -13,7 +13,7 @@
 | Framework | Django 6.0+ (class-based views, ORM, admin) |
 | Language | Python 3.12+ |
 | Database | PostgreSQL (production) / SQLite (local dev) |
-| Task queue | Celery 5.3+ with Redis broker |
+| Task scheduling | Daily cron job (`python manage.py fetch_documents`); no Celery/Redis |
 | HTML fetching | `requests` library (default) or Playwright (JS-heavy sites) |
 | HTML parsing | BeautifulSoup4 + lxml |
 | PDF extraction | pdfplumber |
@@ -32,19 +32,18 @@
 TosDiff-New/
 ├── tosdiff/          # Django project package
 │   ├── settings.py       # All config; secrets via env vars
-│   ├── celery.py         # Celery app instance
 │   ├── urls.py           # Root URL conf
 │   ├── wsgi.py / asgi.py
-│   └── __init__.py       # Imports celery_app so it loads with Django
+│   └── __init__.py
 ├── monitor/              # Main application
 │   ├── models.py         # All data models
 │   ├── admin.py          # Django admin configuration
 │   ├── views.py          # Class-based views
 │   ├── urls.py           # App URL patterns (app_name = "monitor")
-│   ├── services.py       # Pure fetch/parse/snapshot logic (Celery-ready)
-│   ├── tasks.py          # Celery tasks
+│   ├── services.py       # Pure fetch/parse/snapshot logic (command & view friendly)
+│   ├── tasks.py          # Document checks, change-notification queueing, digests (synchronous)
 │   ├── tests.py          # All unit tests
-│   └── management/commands/fetch_documents.py
+│   └── management/commands/fetch_documents.py   # Daily cycle: fetch → queue → digests
 ├── templates/
 │   ├── base.html         # Bootstrap 5 base layout
 │   └── monitor/          # App-specific templates
@@ -101,7 +100,7 @@ TosDiff-New/
 
 ## Core Service Layer (`monitor/services.py`)
 
-All functions are **pure and side-effect-free** — callable from management commands, Celery tasks, or views.
+All functions are **pure and side-effect-free** — callable from management commands, or views.
 
 ### Key functions
 
@@ -127,24 +126,29 @@ All functions are **pure and side-effect-free** — callable from management com
 
 ---
 
-## Celery Tasks (`monitor/tasks.py`)
+## Tasks (`monitor/tasks.py`)
 
-- **`check_document(doc_id)`** — `bind=True`, `max_retries=3`, exponential backoff with jitter; `autoretry_for` network errors; handles missing/inactive documents and `NotImplementedError`
-- **`check_all_documents()`** — Beat task; enqueues one `check_document` task per active document
+Plain synchronous functions — no Celery, no Redis:
 
-### Beat Schedule
-Runs daily at **02:00 UTC** via `CELERY_BEAT_SCHEDULE` in `settings.py`.
+- **`check_document(doc_id)`** — fetches one document and snapshots it if changed; returns a result dict; calls `dispatch_change_notifications` when a new snapshot is created; handles missing/inactive/failing documents and `NotImplementedError`
+- **`send_change_notifications(document_id, new_snapshot_id)`** — queues a `PendingNotification` for every subscriber (daily & weekly alike; no immediate emails)
+- **`send_daily_digests()` / `send_weekly_digests()`** — send one digest email per user (links + per-document unsubscribe), then clear that user's queue
+- **`is_weekly_digest_day(now=None)`** — True when the given date's ISO weekday equals `WEEKLY_DIGEST_WEEKDAY` (default Monday)
+
+### Daily cycle
+
+The daily cron job (`render.yaml`) runs `python manage.py fetch_documents`, which fetches every active document, queues change notifications, sends the **daily** digests, and sends the **weekly** digests whenever `is_weekly_digest_day()` is True. There is no separate beat scheduler.
 
 ---
 
 ## Management Command
 
 ```bash
-python manage.py fetch_documents                  # fetch all active documents (sync)
+python manage.py fetch_documents                  # full daily cycle (fetch → queue → digests)
 python manage.py fetch_documents --id 3           # fetch single document by PK
 python manage.py fetch_documents --dry-run        # list without fetching
-python manage.py fetch_documents --async          # dispatch Celery tasks
-python manage.py fetch_documents --async --id 3   # dispatch single task
+python manage.py fetch_documents --skip-digests   # fetch + queue notifications only
+python manage.py fetch_documents --skip-notifications  # fetch only
 ```
 
 ---
@@ -187,7 +191,8 @@ All secrets and connection strings are read from environment variables. See `.en
 | `DJANGO_ALLOWED_HOSTS` | `*` (debug) | Comma-separated allowed hosts |
 | `DB_ENGINE` | `sqlite3` | `sqlite3` or `postgresql` |
 | `DB_NAME/USER/PASSWORD/HOST/PORT` | — | PostgreSQL connection |
-| `REDIS_URL` | `redis://localhost:6379/0` | Celery broker + result backend |
+| `WEEKLY_DIGEST_WEEKDAY` | `1` | ISO weekday the weekly digests are sent (default Monday) |
+| `MAILGUN_API_KEY` / `MAILGUN_DOMAIN` | _(empty → console)_ | Transactional mail via the Mailgun HTTP API |
 
 **Never commit `.env` files.** Use `.env.example` as a template.
 
@@ -196,17 +201,16 @@ All secrets and connection strings are read from environment variables. See `.en
 ## Docker
 
 ```bash
-# Start all services (web, worker, beat, db, redis)
+# Start the web service and its database
 docker-compose up --build
 
-# Run migrations manually
-docker-compose run --rm web python manage.py migrate
-
-# Fetch documents manually inside container
+# Run the daily monitoring cycle (fetch → queue → digests)
 docker-compose run --rm web python manage.py fetch_documents
 ```
 
-Services: `db` (postgres:16-alpine), `redis` (redis:7-alpine), `web` (gunicorn), `worker` (celery worker), `beat` (celery beat).
+Services: `db` (postgres:16-alpine), `web` (gunicorn). The daily cycle is a
+single synchronous command — schedule it with your platform's cron (see
+`render.yaml`) rather than extra containers.
 
 ---
 
@@ -234,7 +238,7 @@ Services: `db` (postgres:16-alpine), `redis` (redis:7-alpine), `web` (gunicorn),
 
 ### Adding a new service function
 1. Add to `monitor/services.py` as a pure function with type hints
-2. Keep it side-effect-free and Celery-friendly
+2. Keep it side-effect-free and mockable (no external HTTP/filesystem calls without a seam)
 3. Add unit tests with `unittest.mock.patch` for external calls (HTTP, filesystem)
 
 ---

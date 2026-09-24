@@ -243,7 +243,7 @@ admin_emails = [
 ADMINS = admin_emails
 SERVER_EMAIL = os.environ.get("SERVER_EMAIL", "TosDiff Admin <admin@tosdiff.local>")
 
-# Absolute base URL used when building links in emails sent from Celery tasks.
+# Absolute base URL used when building links in emails (login codes, digests).
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000")
 
 # Funding links shown in the site footer ("Support TosDiff" buttons). Leave
@@ -253,38 +253,12 @@ SPONSOR_KOFI_URL = os.environ.get("SPONSOR_KOFI_URL", "")
 
 
 # ---------------------------------------------------------------------------
-# Celery
+# Digest scheduling (driven by the daily cron job)
 # ---------------------------------------------------------------------------
-_redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-CELERY_BROKER_URL = _redis_url
-CELERY_RESULT_BACKEND = _redis_url
-CELERY_ACCEPT_CONTENT = ["json"]
-CELERY_TASK_SERIALIZER = "json"
-CELERY_RESULT_SERIALIZER = "json"
-CELERY_TIMEZONE = "UTC"
-CELERY_TASK_TRACK_STARTED = True
-
-# Retry settings
-CELERY_TASK_ACKS_LATE = True
-CELERY_TASK_REJECT_ON_WORKER_LOST = True
-
-# Celery Beat — periodic tasks
-from celery.schedules import crontab  # noqa: E402
-
-CELERY_BEAT_SCHEDULE = {
-    "check-all-documents-daily": {
-        "task": "monitor.tasks.check_all_documents",
-        "schedule": crontab(hour=2, minute=0),  # 02:00 UTC daily
-    },
-    "send-daily-digests": {
-        "task": "monitor.tasks.send_daily_digests",
-        "schedule": crontab(hour=9, minute=0),  # 09:00 UTC daily
-    },
-    "send-weekly-digests": {
-        "task": "monitor.tasks.send_weekly_digests",
-        "schedule": crontab(hour=9, minute=0, day_of_week="monday"),  # 09:00 UTC Mondays
-    },
-}
+# The daily ``fetch_documents`` cron job fetches documents, queues change
+# notifications, sends the daily digests, and sends the weekly digests on the
+# ISO weekday below (1=Monday … 7=Sunday).
+WEEKLY_DIGEST_WEEKDAY = int(os.environ.get("WEEKLY_DIGEST_WEEKDAY", "1"))
 
 LOGGING = {
     "version": 1,

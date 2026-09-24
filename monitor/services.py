@@ -1,7 +1,8 @@
 """
-Core fetching and snapshot logic — designed to be async-ready (Celery-friendly).
+Core fetching and snapshot logic — designed for synchronous use from the
+daily management command or a view.
 Each function is a pure, side-effect-free unit that can be called from a
-management command, a Celery task, or a view.
+management command, a task, or a view.
 """
 
 import hashlib
@@ -140,7 +141,7 @@ def _get_playwright_browser() -> Any:
     """Return the shared, lazily-initialised Playwright Chromium browser.
 
     One browser is created per process and reused for every fetch, so a whole
-    `fetch_documents` run (or Celery worker) uses a single Chromium instead of
+    `fetch_documents` run uses a single Chromium instead of
     launching/closing one per document.  Must only be called from the Playwright
     worker thread (see :func:`_playwright_submit`).
     """

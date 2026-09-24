@@ -22,7 +22,7 @@ A Django application that monitors changes to Terms of Service and Privacy Polic
 ## Features
 
 - Track **Terms of Service**, **Privacy Policies**, and **Cookie Policies** for any website
-- Automatic periodic fetching via **Celery Beat** (daily at 02:00 UTC)
+- Automatic periodic fetching via a **daily cron job** (runs `python manage.py fetch_documents`)
 - SHA-256 hash-based **duplicate detection** — snapshots are only saved when content actually changes
 - **Markdown-like text extraction** from HTML (headings, bold, italic, lists) suitable for clean diffs
 - **Side-by-side diff view** between any two snapshots using Python's `difflib`
@@ -38,7 +38,7 @@ A Django application that monitors changes to Terms of Service and Privacy Polic
 |---|---|
 | Web framework | Django 6.0+ |
 | Database | PostgreSQL 16 |
-| Task queue | Celery 5 + Redis 7 |
+| Task scheduling | Daily cron job (`fetch_documents`); no Celery/Redis |
 | HTML parsing | BeautifulSoup4 + lxml |
 | Web server | Gunicorn |
 | Containers | Docker + Docker Compose |
@@ -48,7 +48,7 @@ A Django application that monitors changes to Terms of Service and Privacy Polic
 ## Project Structure
 
 ```
-tosdiff/            # Django project package (settings, urls, celery)
+tosdiff/            # Django project package (settings, urls)
 monitor/            # Main app — models, views, services, tasks, admin
   management/
     commands/       # fetch_documents management command
@@ -98,17 +98,18 @@ python -c "from django.core.management.utils import get_random_secret_key; print
 docker compose up --build -d
 ```
 
-This starts four services:
+This starts the web service and its database:
 
 | Service | Role |
 |---|---|
 | `db` | PostgreSQL database |
-| `redis` | Redis broker / result backend |
 | `web` | Django + Gunicorn (port 8000) |
-| `worker` | Celery worker |
-| `beat` | Celery Beat scheduler |
 
 Migrations run automatically when `web` starts.
+
+The daily monitoring cycle is not run by Docker Compose — trigger it on demand
+with `docker compose exec web python manage.py fetch_documents` (or schedule it
+via your platform's cron, e.g. Render's cron jobs in `render.yaml`).
 
 ### 3. Create a superuser
 
@@ -136,7 +137,6 @@ docker compose down -v       # stop and delete all data volumes
 
 - Python 3.12+
 - PostgreSQL (or use SQLite for quick local testing)
-- Redis (for Celery; skip if only running sync commands)
 
 ### Setup
 
@@ -146,7 +146,7 @@ python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
 # Install dependencies
-pip install django requests beautifulsoup4 lxml "psycopg[binary]" celery redis gunicorn
+pip install django requests beautifulsoup4 lxml "psycopg[binary]" gunicorn
 
 # SQLite is used by default — no DB_ENGINE needed
 python manage.py migrate
@@ -165,15 +165,17 @@ export DB_HOST=localhost
 python manage.py migrate
 ```
 
-### Running Celery locally
+### Running the daily cycle manually
 
 ```bash
-# Worker (in a separate terminal)
-celery -A tosdiff worker -l info
-
-# Beat scheduler (in another terminal)
-celery -A tosdiff beat -l info
+# Full cycle: fetch → queue change notifications → send daily digests
+# (weekly digests go out on WEEKLY_DIGEST_WEEKDAY, default Monday)
+python manage.py fetch_documents
 ```
+
+There is no worker process — the command does everything synchronously in one
+process, so schedule it with a plain cron job (e.g. Render's cron service, see
+`render.yaml`).
 
 ---
 
@@ -192,12 +194,14 @@ All variables are read from the environment (or `.env` when using Docker Compose
 | `DB_PASSWORD` | _(required for postgres)_ | PostgreSQL password |
 | `DB_HOST` | `localhost` | PostgreSQL host |
 | `DB_PORT` | `5432` | PostgreSQL port |
-| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection URL |
 | `GUNICORN_WORKERS` | `3` | Number of Gunicorn worker processes |
 | `GUNICORN_TIMEOUT` | `120` | Gunicorn worker timeout (seconds) |
-| `CELERY_LOG_LEVEL` | `info` | Celery log level |
-| `CELERY_CONCURRENCY` | `2` | Celery worker concurrency |
 | `WEB_PORT` | `8000` | Host port mapped to the web container |
+| `BASE_URL` | `http://localhost:8000` | Absolute base URL for links in emails (login codes, change digests) |
+| `MAILGUN_API_KEY` | _(empty → console backend)_ | Mailgun HTTP API key for transactional mail |
+| `MAILGUN_DOMAIN` | _(empty)_ | Mailgun sending domain (e.g. `mg.example.com`) |
+| `DEFAULT_FROM_EMAIL` | `TosDiff <no-reply@...>` | From address for digests — must be on `MAILGUN_DOMAIN` |
+| `WEEKLY_DIGEST_WEEKDAY` | `1` | ISO weekday (1=Monday … 7=Sunday) the weekly digests are sent by the daily cron |
 | `SPONSOR_GITHUB_URL` | _(empty)_ | GitHub Sponsors link for the footer's "Support TosDiff" buttons (hidden when empty) |
 | `SPONSOR_KOFI_URL` | _(empty)_ | Ko-Fi link for the footer's "Support TosDiff" buttons (hidden when empty) |
 
@@ -217,12 +221,15 @@ python manage.py fetch_documents --id 3
 # Dry run — list what would be fetched without fetching
 python manage.py fetch_documents --dry-run
 
-# Dispatch Celery tasks instead of running inline (requires a running worker)
-python manage.py fetch_documents --async
+# Full cycle but skip digest emails (fetch + queue notifications only)
+python manage.py fetch_documents --skip-digests
+
+# Full cycle but skip the change-notification queueing
+python manage.py fetch_documents --skip-notifications
 
 # Via Docker
 docker compose exec web python manage.py fetch_documents
-docker compose exec web python manage.py fetch_documents --id 3 --async
+docker compose exec web python manage.py fetch_documents --id 3
 ```
 
 ---
@@ -282,13 +289,13 @@ docker compose pull   # if using a registry
 docker compose up -d --build
 ```
 
-### Scaling workers
+### Scheduling the daily fetch
 
-To run more Celery workers:
-
-```bash
-docker compose up -d --scale worker=3
-```
+`fetch_documents` runs the whole monitoring cycle synchronously — fetches every
+active document, queues change notifications for subscribers, sends the daily
+digests, and sends the weekly digests on `WEEKLY_DIGEST_WEEKDAY`. Run it from a
+plain cron job; the Render configuration lives in `render.yaml` (web service +
+a `fetch-documents` cron service).
 
 ---
 

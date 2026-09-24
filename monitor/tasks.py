@@ -1,22 +1,20 @@
 """
-Celery tasks for document fetching.
+Document checking and change-notification dispatch.
 
-Workers:  celery -A tosdiff worker -l info
-Beat:     celery -A tosdiff beat -l info
+This module exposes plain, synchronous functions that are driven by
+the ``fetch_documents`` management command (the daily cron job)
+and by the admin "check now" action.
 """
 
 import logging
-import random
+from datetime import datetime
 
-import requests
-from celery import shared_task
-from celery.exceptions import MaxRetriesExceededError
-from celery.signals import worker_shutdown
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.mail import send_mail
 from django.db.models import Q
 from django.urls import reverse
+from django.utils import timezone
 
 from .models import (
     Document,
@@ -27,42 +25,22 @@ from .models import (
     PendingNotification,
 )
 from .services import (
-    close_playwright_browser,
     fetch_and_snapshot,
     make_unsubscribe_token,
 )
 
-
-@worker_shutdown.connect
-def _close_playwright_on_shutdown(**kwargs) -> None:
-    """Release the shared Playwright browser when the Celery worker stops."""
-    close_playwright_browser()
-
-
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Single-document task
+# Single-document check
 # ---------------------------------------------------------------------------
 
 
-@shared_task(
-    bind=True,
-    max_retries=3,
-    default_retry_delay=60,  # 1 minute between retries
-    autoretry_for=(requests.RequestException,),
-    retry_backoff=True,  # exponential back-off
-    retry_backoff_max=600,  # cap at 10 minutes
-    retry_jitter=True,
-    acks_late=True,
-    name="monitor.tasks.check_document",
-)
-def check_document(self, document_id: int) -> dict:
+def check_document(document_id: int) -> dict:
     """
     Fetch and snapshot a single Document.
 
     Returns a dict with keys: document_id, created, error.
-    Retries automatically on network errors (up to max_retries).
     """
     try:
         doc = Document.objects.select_related("organization").get(pk=document_id)
@@ -94,17 +72,6 @@ def check_document(self, document_id: int) -> dict:
 
     try:
         snapshot, created = fetch_and_snapshot(doc)
-    except requests.RequestException as exc:
-        logger.warning(
-            "check_document: network error for document %s: %s — retrying",
-            document_id,
-            exc,
-        )
-        try:
-            raise self.retry(exc=exc)
-        except MaxRetriesExceededError:
-            logger.error("check_document: max retries exceeded for document %s", document_id)
-            return {"document_id": document_id, "created": False, "error": str(exc)}
     except NotImplementedError as exc:
         logger.error(
             "check_document: fetch method not implemented for document %s: %s",
@@ -118,28 +85,27 @@ def check_document(self, document_id: int) -> dict:
 
     if created:
         logger.info("check_document: new snapshot created for document %s", document_id)
-        _dispatch_change_notifications(doc, snapshot)
+        dispatch_change_notifications(doc, snapshot)
     else:
         logger.info("check_document: no change detected for document %s", document_id)
 
     return {"document_id": document_id, "created": created, "error": None}
 
 
-def _dispatch_change_notifications(document: Document, snapshot: DocumentSnapshot) -> None:
-    """Queue notification emails if anyone subscribes to *document* or its org."""
+def dispatch_change_notifications(document: Document, snapshot: DocumentSnapshot) -> None:
+    """Queue PendingNotification rows if anyone subscribes to *document* or its org."""
     has_subscribers = DocumentSubscription.objects.filter(document=document).exists() or (
         OrganizationSubscription.objects.filter(organization=document.organization).exists()
     )
     if has_subscribers:
-        send_change_notifications.delay(document.pk, snapshot.pk)
+        send_change_notifications(document.pk, snapshot.pk)
 
 
 # ---------------------------------------------------------------------------
-# Change notification task
+# Change notification queueing
 # ---------------------------------------------------------------------------
 
 
-@shared_task(name="monitor.tasks.send_change_notifications")
 def send_change_notifications(document_id: int, new_snapshot_id: int) -> dict:
     """
     Queue a change notification for every subscriber of *document_id*.
@@ -200,6 +166,11 @@ def send_change_notifications(document_id: int, new_snapshot_id: int) -> dict:
         document_id,
     )
     return {"sent": 0, "queued": queued, "error": None}
+
+
+# ---------------------------------------------------------------------------
+# Digest emails
+# ---------------------------------------------------------------------------
 
 
 def _send_digest(frequency: str, digest_label: str) -> dict:
@@ -278,39 +249,20 @@ def _send_digest(frequency: str, digest_label: str) -> dict:
     return {"sent": sent, "error": None}
 
 
-@shared_task(name="monitor.tasks.send_daily_digests")
 def send_daily_digests() -> dict:
     """Email daily digest subscribers the changes queued since the last run."""
     return _send_digest(NotificationPreference.Frequency.DAILY, "Daily")
 
 
-@shared_task(name="monitor.tasks.send_weekly_digests")
 def send_weekly_digests() -> dict:
     """Email weekly digest subscribers the changes queued since the last run."""
     return _send_digest(NotificationPreference.Frequency.WEEKLY, "Weekly")
 
 
-# ---------------------------------------------------------------------------
-# Periodic task — dispatched by Celery Beat at 02:00 UTC
-# ---------------------------------------------------------------------------
+def is_weekly_digest_day(now: datetime | None = None) -> bool:
+    """True when *now* (default: now) lands on the weekly digest weekday.
 
-
-@shared_task(name="monitor.tasks.check_all_documents")
-def check_all_documents() -> dict:
+    The weekday is ``settings.WEEKLY_DIGEST_WEEKDAY`` (ISO: 1=Monday … 7=Sunday).
     """
-    Enqueue a check_document task for every active and non-failing Document.
-    Runs daily at 02:00 UTC via Celery Beat.
-    """
-    ids = list(
-        Document.objects.filter(
-            is_active=True,
-            is_failing=False,
-            organization__is_failing=False,
-        ).values_list("pk", flat=True)
-    )
-    if len(ids) > 1:
-        random.shuffle(ids)
-    for doc_id in ids:
-        check_document.delay(doc_id)
-    logger.info("check_all_documents: enqueued %d document(s)", len(ids))
-    return {"enqueued": len(ids)}
+    now = now or timezone.localtime()
+    return now.isoweekday() == settings.WEEKLY_DIGEST_WEEKDAY

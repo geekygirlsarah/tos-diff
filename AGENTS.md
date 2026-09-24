@@ -33,7 +33,7 @@
 | Framework | Django 6.0+ (class-based views, ORM, admin) |
 | Language | Python 3.12+ |
 | Database | PostgreSQL (production) / SQLite (local dev) |
-| Task queue | Celery 5.3+ with Redis broker |
+| Task scheduling | Daily cron job (`python manage.py fetch_documents`); no Celery/Redis |
 | HTML fetching | `requests` library (default) or Playwright (JS-heavy sites) |
 | HTML parsing | BeautifulSoup4 + lxml |
 | PDF extraction | pdfplumber |
@@ -52,21 +52,20 @@
 TosDiff-New/
 ├── tosdiff/          # Django project package
 │   ├── settings.py       # All config; secrets via env vars
-│   ├── celery.py         # Celery app instance
 │   ├── urls.py           # Root URL conf
 │   ├── wsgi.py / asgi.py
-│   └── __init__.py       # Imports celery_app so it loads with Django
+│   └── __init__.py
 ├── monitor/              # Main application
 │   ├── models.py         # All data models
 │   ├── admin.py          # Django admin configuration
 │   ├── views.py          # Class-based views
 │   ├── urls.py           # App URL patterns (app_name = "monitor")
-│   ├── services.py       # Pure fetch/parse/snapshot logic (Celery-ready)
+│   ├── services.py       # Pure fetch/parse/snapshot logic (command & view friendly)
 │   ├── emailing.py       # MailgunBackend (transactional mail via Mailgun HTTP API)
-│   ├── tasks.py          # Celery tasks
+│   ├── tasks.py          # Document checks, change-notification queueing, digests (synchronous)
 │   ├── tests.py          # All unit tests
 │   └── management/commands/
-│       ├── fetch_documents.py
+│       ├── fetch_documents.py       # Daily cycle: fetch → queue notifications → send digests
 │       ├── export_monitor_data.py
 │       └── import_monitor_data.py
 ├── templates/
@@ -147,7 +146,7 @@ When implementing a new feature or fixing a bug:
 
 ### Adding a new service function
 1. Add to `monitor/services.py` as a pure function with type hints
-2. Keep it side-effect-free and Celery-friendly
+2. Keep it side-effect-free and mockable (no external HTTP/filesystem calls without a seam)
 3. Add unit tests with `unittest.mock.patch` for external calls (HTTP, filesystem)
 
 ### Moving tracked data between databases
@@ -171,7 +170,7 @@ Superusers get a custom management area (in addition to Django admin) under `/ma
 
 - `manage_dashboard` — counts + quick-action links to every management page
 - `manage_organizations`, `manage_organization_create`, `manage_organization_update` — CRUD for `Organization`; `manage_organization_delete` confirms + cascades
-- `manage_documents`, `manage_document_create`, `manage_document_update` — CRUD for `Document`; `manage_document_create_for_organization` (`/manage/organizations/<pk>/documents/add/`) preselects the organization; `manage_document_delete`; `manage_document_check` (POST) triggers `check_document.delay(document.pk)` immediately
+- `manage_documents`, `manage_document_create`, `manage_document_update` — CRUD for `Document`; `manage_document_create_for_organization` (`/manage/organizations/<pk>/documents/add/`) preselects the organization; `manage_document_delete`; `manage_document_check` (POST) triggers `check_document(document.pk)` immediately
 - `manage_suggestions`, `manage_suggestion_approve`, `manage_suggestion_reject` — review queue; approving calls `Suggestion.create_organization_and_document()` and marks the suggestion approved; `manage_suggestion_delete`. The list view annotates `is_duplicate` (an `Organization` already exists with the same `website_url`) and the review page warns accordingly. Approving/rejecting emails the submitter via `send_suggestion_review_email()` (skipped when no `contact_email`).
 - `manage_tags`, `manage_tag_create`, `manage_tag_update`, `manage_tag_delete` — CRUD for `Tag`
 - `manage_countries`, `manage_country_create`, `manage_country_update`, `manage_country_delete` — CRUD for `Country` (deleting clears `Document.country`, `SET_NULL`)
@@ -194,7 +193,7 @@ Conventions:
   - **`admin` mailer** — Django error reports (500s) and `mail_admins()`/`mail_managers()` go over the SMTP `EmailBackend` using the `EMAIL_HOST/...` env vars. The requests `AdminEmailHandler` attaches to the `django` logger with `using: "admin"` (in `LOGGING`); `ADMINS` is built from the `DJANGO_ADMIN_EMAILS` env var (list of address strings).
   - Since `MAILERS` is defined, the legacy `EMAIL_BACKEND`/`EMAIL_HOST`/`EMAIL_USE_TLS`/... settings MUST NOT be set (Django 6.1 raises `ImproperlyConfigured`). SMTP options come from `MAILERS["admin"]["OPTIONS"]`; transactional options are read from `MAILGUN_*` at send time so `override_settings()` works in tests.
 - Change notification emails (the daily/weekly digests) include an absolute one-click unsubscribe link per document, signed with `make_unsubscribe_token()` (`services.py`). `UnsubscribeTokenView` (`/unsubscribe/<token>/`) removes the matching `DocumentSubscription` without login (invalid/expired tokens → 404); organization subscriptions are untouched.
-- `NotificationPreference` (OneToOne with user, `frequency` in daily/weekly, default daily) controls delivery. `send_change_notifications` queues a `PendingNotification` for every subscriber (no immediate emails). `send_daily_digests` / `send_weekly_digests` (Celery tasks, wired into `CELERY_BEAT_SCHEDULE` in `settings.py`) send one digest email per user with links + unsubscribe per document, then clear that user's queue. The account page (`monitor/account.html`) edits the preference and lists `my_suggestions`.
+- `NotificationPreference` (OneToOne with user, `frequency` in daily/weekly, default daily) controls delivery. `send_change_notifications` queues a `PendingNotification` for every subscriber (no immediate emails). The daily cron job runs `fetch_documents`, which fetches documents, queues notifications, then calls `send_daily_digests` (and `send_weekly_digests` on the `WEEKLY_DIGEST_WEEKDAY` ISO weekday, default Monday — see `is_weekly_digest_day()` in `tasks.py`) to send one digest email per user with links + unsubscribe per document, then clear that user's queue. The account page (`monitor/account.html`) edits the preference and lists `my_suggestions`.
 - `Suggestion.user` (nullable FK, `SET_NULL`) records the logged-in submitter; anonymous submissions leave it null.
 
 ## UI & Templates

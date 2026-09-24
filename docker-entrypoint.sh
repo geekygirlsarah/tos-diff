@@ -48,20 +48,6 @@ case "$1" in
             --access-logfile - \
             --error-logfile -
         ;;
-    worker)
-        echo "Starting Celery worker..."
-        exec celery -A tosdiff worker \
-            --loglevel="${CELERY_LOG_LEVEL:-info}" \
-            --concurrency="${CELERY_CONCURRENCY:-2}"
-        ;;
-    beat)
-        echo "Starting Celery Beat scheduler..."
-exec celery -A tosdiff beat \
-            --loglevel="${CELERY_LOG_LEVEL:-info}" \
-            --scheduler django_celery_beat.schedulers:DatabaseScheduler 2>/dev/null \
-            || exec celery -A tosdiff beat \
-                --loglevel="${CELERY_LOG_LEVEL:-info}"
-        ;;
     manage)
         shift
         exec python manage.py "$@"

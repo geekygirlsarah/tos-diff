@@ -42,6 +42,14 @@ services:
         sync: false
       - key: DEFAULT_FROM_EMAIL
         sync: false
+      - key: MAILGUN_API_KEY
+        sync: false  # transactional mail (login codes, change digests) via Mailgun
+      - key: MAILGUN_DOMAIN
+        sync: false  # sending domain, e.g. mg.tosdiff.org
+      - key: BASE_URL
+        value: https://tosdiff.org  # public site root used for links in emails
+      - key: WEEKLY_DIGEST_WEEKDAY
+        value: "1"  # weekly digests go out on the fetch-cron day for ISO weekday 1 (Monday)
   - type: cron
     name: fetch-documents
     runtime: docker
@@ -49,6 +57,8 @@ services:
     branch: main
     plan: 1c-2g
     region: ohio
+    # Fetches every document, queues change notifications for subscribers, sends
+    # the daily digests, and sends the weekly digests on the WEEKLY_DIGEST_WEEKDAY.
     schedule: "15 8 * * *"  # 08:15 UTC daily (00:15 PST/01:15 PDT, 03:15 EST/04:15 EDT)
     dockerCommand: python manage.py fetch_documents
     envVars:
@@ -64,6 +74,16 @@ services:
           property: connectionString
       - key: DJANGO_ALLOWED_HOSTS
         value: "*"
+      - key: BASE_URL
+        value: https://tosdiff.org
+      - key: MAILGUN_API_KEY
+        sync: false  # transactional mail (login codes, change digests) via Mailgun
+      - key: MAILGUN_DOMAIN
+        sync: false  # sending domain, e.g. mg.tosdiff.org
+      - key: DEFAULT_FROM_EMAIL
+        sync: false  # must use a sender on MAILGUN_DOMAIN so Mailgun accepts it
+      - key: WEEKLY_DIGEST_WEEKDAY
+        value: "1"  # weekly digests go out on this ISO weekday (1=Monday)
 
 databases:
   - name: tosdiff-db
