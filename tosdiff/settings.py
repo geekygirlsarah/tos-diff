@@ -108,8 +108,10 @@ def database_config_from_url(database_url: str) -> dict:
 
     Query parameters (e.g. ``sslmode=require``) are forwarded verbatim to
     ``OPTIONS`` so Render's TLS requirement works straight from the URL.
+    Leading/trailing whitespace and wrapping quotes are stripped first so a
+    URL pasted from a dashboard is accepted as-is.
     """
-    parsed = urlparse(database_url)
+    parsed = urlparse(database_url.strip().strip("\"'"))
     options = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
     return {
         "ENGINE": "django.db.backends.postgresql",

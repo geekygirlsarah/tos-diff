@@ -3287,6 +3287,23 @@ class DatabaseConfigFromUrlTest(TestCase):
         config = database_config_from_url("postgresql://user:pass@host:5432/tosdiff")
         self.assertEqual(config["OPTIONS"], {})
 
+    def test_wrapped_in_quotes_still_parses(self):
+        from tosdiff.settings import database_config_from_url
+
+        config = database_config_from_url(
+            '"postgresql://user:pass@host:5432/tosdiff_kvvw?sslmode=require"'
+        )
+        self.assertEqual(config["NAME"], "tosdiff_kvvw")
+        self.assertEqual(config["USER"], "user")
+        self.assertEqual(config["OPTIONS"], {"sslmode": "require"})
+
+    def test_wrapped_in_single_quotes_and_spaces_still_parses(self):
+        from tosdiff.settings import database_config_from_url
+
+        config = database_config_from_url(" 'postgresql://user:pass@host/tosdiff?sslmode=require' ")
+        self.assertEqual(config["NAME"], "tosdiff")
+        self.assertEqual(config["OPTIONS"], {"sslmode": "require"})
+
     def test_last_repeated_param_wins(self):
         from tosdiff.settings import database_config_from_url
 
