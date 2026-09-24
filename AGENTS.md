@@ -62,6 +62,7 @@ TosDiff-New/
 │   ├── views.py          # Class-based views
 │   ├── urls.py           # App URL patterns (app_name = "monitor")
 │   ├── services.py       # Pure fetch/parse/snapshot logic (Celery-ready)
+│   ├── emailing.py       # MailgunBackend (transactional mail via Mailgun HTTP API)
 │   ├── tasks.py          # Celery tasks
 │   ├── tests.py          # All unit tests
 │   └── management/commands/fetch_documents.py
@@ -170,6 +171,10 @@ Conventions:
 
 ## Email Delivery & Subscription Preferences
 
+- **Two delivery paths via Django 6.1's `MAILERS` multiplexer** (see `tosdiff/settings.py`):
+  - **`default` mailer** — all user-facing transactional mail (OTP login codes via `send_login_code_email`, suggestion reviews via `send_suggestion_review_email`, daily/weekly digests) is sent through `monitor/emailing.py: MailgunBackend`, which POSTs to Mailgun's HTTP Messages API (`https://api.mailgun.net/v3/{MAILGUN_DOMAIN}/messages`) using `requests` (no extra dependency). Falls back to the console backend when `MAILGUN_API_KEY` is unset.
+  - **`admin` mailer** — Django error reports (500s) and `mail_admins()`/`mail_managers()` go over the SMTP `EmailBackend` using the `EMAIL_HOST/...` env vars. The requests `AdminEmailHandler` attaches to the `django` logger with `using: "admin"` (in `LOGGING`); `ADMINS` is built from the `DJANGO_ADMIN_EMAILS` env var (list of address strings).
+  - Since `MAILERS` is defined, the legacy `EMAIL_BACKEND`/`EMAIL_HOST`/`EMAIL_USE_TLS`/... settings MUST NOT be set (Django 6.1 raises `ImproperlyConfigured`). SMTP options come from `MAILERS["admin"]["OPTIONS"]`; transactional options are read from `MAILGUN_*` at send time so `override_settings()` works in tests.
 - Change notification emails (the daily/weekly digests) include an absolute one-click unsubscribe link per document, signed with `make_unsubscribe_token()` (`services.py`). `UnsubscribeTokenView` (`/unsubscribe/<token>/`) removes the matching `DocumentSubscription` without login (invalid/expired tokens → 404); organization subscriptions are untouched.
 - `NotificationPreference` (OneToOne with user, `frequency` in daily/weekly, default daily) controls delivery. `send_change_notifications` queues a `PendingNotification` for every subscriber (no immediate emails). `send_daily_digests` / `send_weekly_digests` (Celery tasks, wired into `CELERY_BEAT_SCHEDULE` in `settings.py`) send one digest email per user with links + unsubscribe per document, then clear that user's queue. The account page (`monitor/account.html`) edits the preference and lists `my_suggestions`.
 - `Suggestion.user` (nullable FK, `SET_NULL`) records the logged-in submitter; anonymous submissions leave it null.

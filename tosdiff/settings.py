@@ -178,16 +178,56 @@ STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # ---------------------------------------------------------------------------
-# Email (one-time login codes and change notifications)
+# Email — Mailgun for transactional mail, SMTP for admin/ops mail
 # ---------------------------------------------------------------------------
-EMAIL_BACKEND = os.environ.get("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
-EMAIL_HOST = os.environ.get("EMAIL_HOST", "localhost")
-EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "25"))
-EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "false").lower() in ("1", "true", "yes")
-EMAIL_USE_SSL = os.environ.get("EMAIL_USE_SSL", "false").lower() in ("1", "true", "yes")
-EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
-EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+# Django 6.1's MAILERS multiplexer routes each email type to its own backend:
+#   * "default" — user-facing transactional mail (OTP login codes, suggestion
+#     replies, daily/weekly digests) via Mailgun's HTTP API.
+#   * "admin"   — Django error reports plus mail_admins()/mail_managers()
+#     calls; these keep using the SMTP server configured below.
+# When MAILGUN_API_KEY is unset (local dev), the default mailer falls back to
+# the console backend; admin mail always uses the SMTP settings.
+# Note: defines MAILERS, so the legacy EMAIL_BACKEND/EMAIL_HOST/... settings
+# must NOT be set (Django 6.1 rejects them when MAILERS is defined).
+MAILGUN_API_KEY = os.environ.get("MAILGUN_API_KEY", "")
+MAILGUN_DOMAIN = os.environ.get("MAILGUN_DOMAIN", "")
+MAILGUN_API_URL = os.environ.get("MAILGUN_API_URL", "https://api.mailgun.net")
+MAILGUN_TIMEOUT = int(os.environ.get("MAILGUN_TIMEOUT", "30"))
+
+_default_mailer_backend = (
+    "monitor.emailing.MailgunBackend"
+    if MAILGUN_API_KEY
+    else "django.core.mail.backends.console.EmailBackend"
+)
+
+MAILERS = {
+    "default": {
+        "BACKEND": _default_mailer_backend,
+        "OPTIONS": {},
+    },
+    "admin": {
+        "BACKEND": "django.core.mail.backends.smtp.EmailBackend",
+        "OPTIONS": {
+            "host": os.environ.get("EMAIL_HOST", "localhost"),
+            "port": int(os.environ.get("EMAIL_PORT", "25")),
+            "username": os.environ.get("EMAIL_HOST_USER", ""),
+            "password": os.environ.get("EMAIL_HOST_PASSWORD", ""),
+            "use_tls": os.environ.get("EMAIL_USE_TLS", "false").lower() in ("1", "true", "yes"),
+            "use_ssl": os.environ.get("EMAIL_USE_SSL", "false").lower() in ("1", "true", "yes"),
+            "timeout": int(os.environ.get("EMAIL_TIMEOUT", "30")),
+        },
+    },
+}
+
 DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "TosDiff <no-reply@tosdiff.local>")
+
+# Admin/ops mail recipients — Django error reports are sent to these
+# addresses (list of email address strings).
+admin_emails = [
+    e.strip() for e in os.environ.get("DJANGO_ADMIN_EMAILS", "").split(",") if e.strip()
+]
+ADMINS = admin_emails
+SERVER_EMAIL = os.environ.get("SERVER_EMAIL", "TosDiff Admin <admin@tosdiff.local>")
 
 # Absolute base URL used when building links in emails sent from Celery tasks.
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000")
@@ -230,9 +270,23 @@ CELERY_BEAT_SCHEDULE = {
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
+    "filters": {
+        "require_debug_false": {
+            "()": "django.utils.log.RequireDebugFalse",
+        },
+    },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
+        },
+        "admin_email": {
+            "class": "django.utils.log.AdminEmailHandler",
+            "filters": ["require_debug_false"],
+            "level": "ERROR",
+            # Route 500 error reports over SMTP through the mailers
+            # subsystem ("admin" mailer) — transactional mail stays on Mailgun.
+            "using": "admin",
+            "include_html": True,
         },
     },
     "root": {
@@ -242,6 +296,13 @@ LOGGING = {
     "loggers": {
         "monitor": {
             "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        # Without this, Django's default logging config isn't applied, so
+        # request errors (500s) would never reach the AdminEmailHandler.
+        "django": {
+            "handlers": ["console", "admin_email"],
             "level": "INFO",
             "propagate": False,
         },

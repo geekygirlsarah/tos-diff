@@ -4,6 +4,7 @@ Unit tests for the monitor app.
 Run with:  python manage.py test monitor
 """
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import requests
@@ -11,11 +12,15 @@ from django.conf import settings
 from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.core import mail
+from django.core.mail import EmailMessage, EmailMultiAlternatives
+from django.core.mail.backends.smtp import EmailBackend as SMTPEmailBackend
 from django.db import IntegrityError
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.log import AdminEmailHandler
 
+from .emailing import MailgunBackend
 from .models import (
     Country,
     Document,
@@ -2799,3 +2804,214 @@ class HttpsOnlyProductionTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Strict-Transport-Security", response.headers)
         self.assertTrue(response.cookies["csrftoken"]["secure"])
+
+
+# ---------------------------------------------------------------------------
+# Email delivery — Mailgun transactional backend & admin mailer routing
+# ---------------------------------------------------------------------------
+
+
+@override_settings(
+    MAILGUN_API_KEY="key-cafebeef",
+    MAILGUN_DOMAIN="mg.example.com",
+)
+class MailgunBackendTest(TestCase):
+    """MailgunBackend posts messages to Mailgun's HTTP Messages API."""
+
+    def _message(self):
+        return EmailMessage(
+            "Subject",
+            "Body",
+            "TosDiff <no-reply@example.com>",
+            ["bob@example.com"],
+        )
+
+    def _ok_post(self, mock_post):
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.raise_for_status = MagicMock()
+        return mock_post
+
+    def test_posts_to_mailgun_messages_endpoint(self):
+        with patch("monitor.emailing.requests.post") as mock_post:
+            self._ok_post(mock_post)
+            sent = MailgunBackend().send_messages([self._message()])
+        self.assertEqual(sent, 1)
+        mock_post.assert_called_once()
+        self.assertEqual(
+            mock_post.call_args[0][0],
+            "https://api.mailgun.net/v3/mg.example.com/messages",
+        )
+
+    def test_authenticates_with_api_key(self):
+        with patch("monitor.emailing.requests.post") as mock_post:
+            self._ok_post(mock_post)
+            MailgunBackend().send_messages([self._message()])
+        self.assertEqual(mock_post.call_args[1]["auth"], ("api", "key-cafebeef"))
+
+    def test_sends_plain_text_message(self):
+        with patch("monitor.emailing.requests.post") as mock_post:
+            self._ok_post(mock_post)
+            MailgunBackend().send_messages([self._message()])
+        data = mock_post.call_args[1]["data"]
+        self.assertEqual(data["from"], "TosDiff <no-reply@example.com>")
+        self.assertEqual(data["to"], "bob@example.com")
+        self.assertEqual(data["subject"], "Subject")
+        self.assertEqual(data["text"], "Body")
+        self.assertNotIn("html", data)
+
+    def test_sends_html_alternative(self):
+        message = EmailMultiAlternatives(
+            "Subject", "Plain body", "no-reply@example.com", ["bob@example.com"]
+        )
+        message.attach_alternative("<p>HTML body</p>", "text/html")
+        with patch("monitor.emailing.requests.post") as mock_post:
+            self._ok_post(mock_post)
+            MailgunBackend().send_messages([message])
+        data = mock_post.call_args[1]["data"]
+        self.assertEqual(data["text"], "Plain body")
+        self.assertEqual(data["html"], "<p>HTML body</p>")
+
+    def test_sends_cc_bcc_reply_to_and_extra_headers(self):
+        message = EmailMessage(
+            "Subject",
+            "Body",
+            "no-reply@example.com",
+            ["a@example.com"],
+            cc=["cc@example.com"],
+            bcc=["bcc@example.com"],
+            headers={"Reply-To": "support@example.com", "X-Feature": "digest"},
+        )
+        with patch("monitor.emailing.requests.post") as mock_post:
+            self._ok_post(mock_post)
+            MailgunBackend().send_messages([message])
+        data = mock_post.call_args[1]["data"]
+        self.assertEqual(data["cc"], "cc@example.com")
+        self.assertEqual(data["bcc"], "bcc@example.com")
+        self.assertEqual(data["h:Reply-To"], "support@example.com")
+        self.assertEqual(data["h:X-Feature"], "digest")
+
+    def test_returns_count_of_sent_messages(self):
+        with patch("monitor.emailing.requests.post") as mock_post:
+            self._ok_post(mock_post)
+            sent = MailgunBackend().send_messages([self._message(), self._message()])
+        self.assertEqual(sent, 2)
+        self.assertEqual(mock_post.call_count, 2)
+
+    def test_sends_attachments(self):
+        message = self._message()
+        message.attach("hello.txt", "hello world", "text/plain")
+        with patch("monitor.emailing.requests.post") as mock_post:
+            self._ok_post(mock_post)
+            MailgunBackend().send_messages([message])
+        files = mock_post.call_args[1]["files"]
+        self.assertIsNotNone(files)
+        name, (filename, content, mimetype) = files[0]
+        self.assertEqual(name, "attachment")
+        self.assertEqual(filename, "hello.txt")
+        self.assertEqual(content, "hello world")
+        self.assertEqual(mimetype, "text/plain")
+
+    def test_returns_zero_when_unconfigured_and_fail_silently(self):
+        with override_settings(MAILGUN_API_KEY="", MAILGUN_DOMAIN=""):
+            with patch("monitor.emailing.requests.post") as mock_post:
+                sent = MailgunBackend(fail_silently=True).send_messages([self._message()])
+        self.assertEqual(sent, 0)
+        mock_post.assert_not_called()
+
+    def test_raises_when_unconfigured_and_not_fail_silently(self):
+        with override_settings(MAILGUN_API_KEY="", MAILGUN_DOMAIN=""):
+            with patch("monitor.emailing.requests.post") as mock_post:
+                with self.assertRaises(RuntimeError):
+                    MailgunBackend().send_messages([self._message()])
+        mock_post.assert_not_called()
+
+    def test_api_error_returns_zero_when_fail_silently(self):
+        with patch("monitor.emailing.requests.post") as mock_post:
+            mock_post.side_effect = requests.RequestException("boom")
+            sent = MailgunBackend(fail_silently=True).send_messages([self._message()])
+        self.assertEqual(sent, 0)
+
+    def test_api_error_raises_when_not_fail_silently(self):
+        with patch("monitor.emailing.requests.post") as mock_post:
+            mock_post.side_effect = requests.RequestException("boom")
+            with self.assertRaises(requests.RequestException):
+                MailgunBackend().send_messages([self._message()])
+
+    def test_supports_eu_region_api_url(self):
+        with override_settings(MAILGUN_API_URL="https://api.eu.mailgun.net"):
+            with patch("monitor.emailing.requests.post") as mock_post:
+                self._ok_post(mock_post)
+                MailgunBackend().send_messages([self._message()])
+        self.assertEqual(
+            mock_post.call_args[0][0],
+            "https://api.eu.mailgun.net/v3/mg.example.com/messages",
+        )
+
+
+class MailersConfigurationTest(TestCase):
+    """The MAILERS multiplexer routes transactional mail and ops mail separately."""
+
+    @override_settings(
+        MAILERS={
+            "default": {
+                "BACKEND": "monitor.emailing.MailgunBackend",
+                "OPTIONS": {},
+            },
+            "admin": {
+                "BACKEND": "django.core.mail.backends.smtp.EmailBackend",
+                "OPTIONS": {
+                    "host": "smtp.example.com",
+                    "port": 587,
+                    "username": "mailuser",
+                    "password": "mailpass",
+                    "use_tls": True,
+                    "use_ssl": False,
+                    "timeout": 30,
+                },
+            },
+        }
+    )
+    def test_default_mailer_is_the_mailgun_backend(self):
+        conn = mail.mailers.default
+        self.assertIsInstance(conn, MailgunBackend)
+
+    @override_settings(
+        MAILERS={
+            "default": {
+                "BACKEND": "monitor.emailing.MailgunBackend",
+                "OPTIONS": {},
+            },
+            "admin": {
+                "BACKEND": "django.core.mail.backends.smtp.EmailBackend",
+                "OPTIONS": {
+                    "host": "smtp.example.com",
+                    "port": 587,
+                    "username": "mailuser",
+                    "password": "mailpass",
+                    "use_tls": True,
+                    "use_ssl": False,
+                    "timeout": 30,
+                },
+            },
+        }
+    )
+    def test_admin_mailer_is_the_smtp_backend_with_custom_options(self):
+        conn = mail.mailers["admin"]
+        self.assertIsInstance(conn, SMTPEmailBackend)
+        self.assertEqual(conn.host, "smtp.example.com")
+        self.assertEqual(conn.port, 587)
+        self.assertEqual(conn.username, "mailuser")
+        self.assertEqual(conn.password, "mailpass")
+        self.assertTrue(conn.use_tls)
+        self.assertEqual(conn.timeout, 30)
+
+
+class AdminErrorEmailRoutingTest(TestCase):
+    """Django error reports (500s) are wired to the admin/SMTP mailer."""
+
+    def test_request_error_handler_uses_admin_mailer(self):
+        logger = logging.getLogger("django")
+        email_handlers = [h for h in logger.handlers if isinstance(h, AdminEmailHandler)]
+        self.assertTrue(email_handlers, "django logger has no AdminEmailHandler")
+        for handler in email_handlers:
+            self.assertEqual(handler.using, "admin")
