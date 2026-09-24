@@ -6,10 +6,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install system dependencies needed by psycopg (libpq) and lxml
+# Install system dependencies needed by psycopg (libpq) and lxml. Git is needed
+# at runtime so the footer can show the "Last updated" date from the last commit
+# (the .git directory is copied in with the source below).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     gcc \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies first (layer-cached unless requirements change)

@@ -205,6 +205,7 @@ Conventions:
 - Organization favicons render next to org names using `Organization.favicon_url` (DuckDuckGo's icon service) with lazy loading and a hidden fallback on error.
 - Shared UI styling lives in `templates/base.html` as CSS custom properties under the `--td-*` variables (blues/greens palette). Custom classes are prefixed `td-` (e.g. `td-card`, `td-chip`, `td-badge`, `td-card-row`, `td-support-btn`).
 - The footer (`templates/base.html`) renders a "Support TosDiff" line with GitHub Sponsors and Ko-Fi pill buttons when `SPONSOR_GITHUB_URL` / `SPONSOR_KOFI_URL` are set. A context processor (`monitor/context_processors.py`) exposes those settings to every template, and the whole section stays hidden when neither URL is configured (so local dev and future funded states render nothing).
+- The footer's "Last updated: <Month Year>" line is computed from the repository's last commit by the `last_updated` context processor (`monitor/context_processors.py`), which shells out to `git log -1 --format=%cs` once per process and caches the result. The line is hidden when git is unavailable or the checkout has no `.git` directory; the Dockerfile installs `git` so production images can compute it.
 
 ---
 

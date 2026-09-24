@@ -287,7 +287,7 @@
         <div class="col-md-6 text-md-end small" style="color: var(--td-text-muted);">
           Source code:
           <a href="https://github.com/geekygirlsarah/tos-diff" target="_blank" rel="noopener noreferrer">GitHub</a><br>
-          Last updated: May 2026
+          {% if last_updated %}Last updated: {{ last_updated|date:"F d, Y" }}{% endif %}
         </div>
       </div>
     </div>

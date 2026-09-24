@@ -25,6 +25,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.utils.log import AdminEmailHandler
 
+from . import context_processors
 from .emailing import MailgunBackend
 from .models import (
     Country,
@@ -1684,6 +1685,42 @@ class SponsorLinksFooterTest(TestCase):
         response = self.client.get(reverse("monitor:home"))
         self.assertContains(response, "https://github.com/sponsors/example")
         self.assertNotContains(response, "ko-fi.com")
+
+
+class LastUpdatedFooterTest(TestCase):
+    """The footer's "Last updated" line is derived from the repo's last commit."""
+
+    def setUp(self):
+        super().setUp()
+        # Force the context processor to recompute (its result is cached per process).
+        resetter = patch.object(
+            context_processors, "_last_commit_date_cache", context_processors._UNSET
+        )
+        resetter.start()
+        self.addCleanup(resetter.stop)
+
+    def test_footer_shows_last_commit_month(self):
+        with patch(
+            "monitor.context_processors.subprocess.run",
+            return_value=MagicMock(stdout="2024-01-15\n"),
+        ):
+            response = self.client.get(reverse("monitor:home"))
+        self.assertContains(response, "Last updated: January 2024")
+        self.assertNotContains(response, "Last updated: May 2026")
+
+    def test_footer_hides_line_when_git_unavailable(self):
+        with patch("monitor.context_processors.subprocess.run", side_effect=FileNotFoundError):
+            response = self.client.get(reverse("monitor:home"))
+        self.assertNotContains(response, "Last updated:")
+
+    def test_commit_date_computed_once_per_process(self):
+        with patch(
+            "monitor.context_processors.subprocess.run",
+            return_value=MagicMock(stdout="2024-01-15\n"),
+        ) as mock_run:
+            context_processors._get_last_commit_date()
+            context_processors._get_last_commit_date()
+        self.assertEqual(mock_run.call_count, 1)
 
 
 class TermsViewTest(TestCase):

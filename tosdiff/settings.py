@@ -92,6 +92,7 @@ TEMPLATES = [
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
                 "monitor.context_processors.sponsor_links",
+                "monitor.context_processors.last_updated",
             ],
         },
     },
