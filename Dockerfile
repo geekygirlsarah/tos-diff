@@ -27,6 +27,10 @@ RUN pip install --upgrade pip && \
         "gunicorn>=22.0" \
         "playwright>=1.40"
 
+# Install Playwright's Chromium browser and its system libraries (--with-deps
+# runs apt-get for the shared libraries browsers need at runtime, e.g. libgtk-3)
+RUN playwright install --with-deps chromium
+
 # Copy project source
 COPY . .
 
