@@ -23,7 +23,7 @@ services:
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_ALLOWED_HOSTS
-        value: tosdiff.onrender.com  # ← update after deploy
+        value: tosdiff.onrender.com,tosdiff.org
       - key: DB_ENGINE
         value: postgresql
       - key: DATABASE_URL
