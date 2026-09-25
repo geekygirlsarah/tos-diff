@@ -36,6 +36,14 @@ DEFAULT_HEADERS = {
     "User-Agent": ("TosDiff-Monitor/1.0 (document change tracker; contact your-email@example.com)")
 }
 
+# Last-resort User-Agent used only when the site bot-blocks our transparent
+# TosDiff identity.  It matches the Chromium build bundled with this project's
+# Playwright (see tests) so the TLS/version fingerprint stays consistent.
+REAL_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+)
+
 # Tags always stripped before extraction
 _STRIP_TAGS = [
     "script",
@@ -326,6 +334,7 @@ def fetch_html_playwright(
     dismiss_selectors: list[str] | None = None,
     challenge_timeout: float = DEFAULT_CHALLENGE_TIMEOUT,
     timeout: int = DEFAULT_TIMEOUT,
+    user_agent: str | None = None,
 ) -> str:
     """
     Fetch fully-rendered HTML from *url* using a shared headless Chromium browser.
@@ -354,13 +363,16 @@ def fetch_html_playwright(
         auto-resolve before raising :class:`RuntimeError`.
     timeout:
         Navigation timeout in seconds.
+    user_agent:
+        User-Agent to present.  Defaults to the transparent
+        :data:`DEFAULT_HEADERS` identity.
     """
     _rate_limit(url)
 
     def _run() -> str:
         browser = _get_playwright_browser()
         context = browser.new_context(
-            user_agent=DEFAULT_HEADERS["User-Agent"],
+            user_agent=user_agent or DEFAULT_HEADERS["User-Agent"],
             java_script_enabled=True,
         )
         try:
@@ -741,20 +753,22 @@ def fetch_document_content(document: Document) -> tuple[str | None, str]:
 
     Strategy
     --------
-    1. If ``fetch_method`` is already ``PLAYWRIGHT``, go straight to Playwright.
-    2. Otherwise try a plain HTTP request first.
-    3. If the response status is 403/429, or the extracted text is empty,
-       fall back to Playwright automatically.
-    4. The method that succeeded is returned as the second element of the tuple
-       so the caller can persist it on the document.
+    1. ``fetch_method`` selects the starting backend (and UA identity).
+    2. If that attempt is bot-blocked / returns a retryable status / empty
+       content, escalate to the next rung on the ladder (requests → Playwright
+       with the transparent TosDiff identity → Playwright with a realistic
+       browser UA).
+    3. The method that succeeded is returned as the second element of the
+       tuple so the caller can persist it; future runs then start directly on
+       the winning rung instead of poking the site with multiple identities.
 
     Automatically detects PDF responses and extracts text accordingly.
     Sets ``document.document_format`` and saves it.
 
     Access-denied / bot-block interstitials (e.g. Akamai "Access Denied" pages
-    carrying an error reference) are never treated as document content: the
-    requests path retries them with Playwright, and if the block page persists
-    the document is marked ``is_failing`` so the daily run stops polling it.
+    carrying an error reference) are never treated as document content.  When
+    the block page persists across the whole ladder the document is marked
+    ``is_failing`` so the daily run stops polling it.
 
     Returns ``(cleaned_text, fetch_method_used)``.
     ``cleaned_text`` is *None* when fetching/extraction fails entirely.
@@ -771,23 +785,42 @@ def fetch_document_content(document: Document) -> tuple[str | None, str]:
     dismiss_selectors: list[str] = cfg.get("dismiss_selectors") or []
     challenge_timeout: float = float(cfg.get("challenge_timeout", DEFAULT_CHALLENGE_TIMEOUT))
 
-    use_playwright = document.fetch_method == Document.FetchMethod.PLAYWRIGHT
+    # Ordered fallback ladder of (fetch_method) attempts for this document.
+    # Plain requests presents the transparent identity and steps up to
+    # Playwright (transparent, then a realistic browser UA) when blocked;
+    # plain Playwright starts transparent and escalates to the browser UA;
+    # ``playwright_browser`` always uses the browser UA directly.
+    if document.fetch_method == Document.FetchMethod.PLAYWRIGHT_BROWSER:
+        ladder = [Document.FetchMethod.PLAYWRIGHT_BROWSER]
+    elif document.fetch_method == Document.FetchMethod.PLAYWRIGHT:
+        ladder = [
+            Document.FetchMethod.PLAYWRIGHT,
+            Document.FetchMethod.PLAYWRIGHT_BROWSER,
+        ]
+    else:
+        ladder = [
+            Document.FetchMethod.REQUESTS,
+            Document.FetchMethod.PLAYWRIGHT,
+            Document.FetchMethod.PLAYWRIGHT_BROWSER,
+        ]
 
-    # ------------------------------------------------------------------
-    # Attempt 1: plain HTTP requests (unless Playwright is forced)
-    # ------------------------------------------------------------------
-    if not use_playwright:
-        try:
-            _rate_limit(document.url)
-            response = requests.get(document.url, headers=DEFAULT_HEADERS, timeout=DEFAULT_TIMEOUT)
-            if response.status_code in _PLAYWRIGHT_RETRY_STATUSES:
-                logger.info(
-                    "fetch_document_content: %s returned %s — will retry with Playwright",
-                    document.url,
-                    response.status_code,
+    for method in ladder:
+        if method == Document.FetchMethod.REQUESTS:
+            # ------------------------------------------------------------------
+            # Attempt: plain HTTP requests with the transparent identity
+            # ------------------------------------------------------------------
+            try:
+                _rate_limit(document.url)
+                response = requests.get(
+                    document.url, headers=DEFAULT_HEADERS, timeout=DEFAULT_TIMEOUT
                 )
-                use_playwright = True
-            else:
+                if response.status_code in _PLAYWRIGHT_RETRY_STATUSES:
+                    logger.info(
+                        "fetch_document_content: %s returned %s — will retry with Playwright",
+                        document.url,
+                        response.status_code,
+                    )
+                    continue
                 response.raise_for_status()
                 if _is_pdf_response(response):
                     Document.objects.filter(pk=document.pk).update(
@@ -809,61 +842,77 @@ def fetch_document_content(document: Document) -> tuple[str | None, str]:
                         "bot-block page — will retry with Playwright",
                         document.url,
                     )
-                    use_playwright = True
-                elif text:
+                    continue
+                if text:
                     Document.objects.filter(pk=document.pk).update(
                         document_format=Document.DocumentFormat.HTML
                     )
                     document.document_format = Document.DocumentFormat.HTML
                     return text, Document.FetchMethod.REQUESTS
-                else:
-                    # Empty content — fall back to Playwright
-                    logger.info(
-                        "fetch_document_content: empty content from %s — will retry with Playwright",
-                        document.url,
-                    )
-                    use_playwright = True
 
-        except requests.RequestException as exc:
-            logger.error("Failed to fetch %s via requests: %s", document.url, exc)
-            # Fall through to Playwright
-            use_playwright = True
-
-    # ------------------------------------------------------------------
-    # Attempt 2: Playwright headless browser
-    # ------------------------------------------------------------------
-    if use_playwright:
-        try:
-            html = fetch_html_playwright(
-                document.url,
-                wait_for_selector=wait_for_selector,
-                sleep_seconds=sleep_seconds,
-                dismiss_selectors=dismiss_selectors,
-                challenge_timeout=challenge_timeout,
-            )
-            text = extract_text(html, extra_selectors=extra_selectors or None)
-            if _looks_like_bot_block(text):
-                logger.warning(
-                    "fetch_document_content: %s returned an access-denied / "
-                    "bot-block page — marking document as failing",
+                # Empty content — fall back to Playwright
+                logger.info(
+                    "fetch_document_content: empty content from %s — will retry with Playwright",
                     document.url,
                 )
-                Document.objects.filter(pk=document.pk).update(
-                    is_failing=True,
-                    last_checked=timezone.now(),
+                continue
+            except requests.RequestException as exc:
+                logger.error("Failed to fetch %s via requests: %s", document.url, exc)
+                continue
+        else:
+            # ------------------------------------------------------------------
+            # Attempt: Playwright headless browser.  ``playwright_browser``
+            # presents the realistic browser User-Agent; plain Playwright
+            # presents the transparent TosDiff identity.
+            # ------------------------------------------------------------------
+            user_agent = (
+                REAL_BROWSER_USER_AGENT
+                if method == Document.FetchMethod.PLAYWRIGHT_BROWSER
+                else DEFAULT_HEADERS["User-Agent"]
+            )
+            try:
+                html = fetch_html_playwright(
+                    document.url,
+                    wait_for_selector=wait_for_selector,
+                    sleep_seconds=sleep_seconds,
+                    dismiss_selectors=dismiss_selectors,
+                    challenge_timeout=challenge_timeout,
+                    user_agent=user_agent,
                 )
-                document.is_failing = True
-                return None, Document.FetchMethod.PLAYWRIGHT
+                text = extract_text(html, extra_selectors=extra_selectors or None)
+            except Exception as exc:
+                logger.error("Failed to fetch %s via Playwright: %s", document.url, exc)
+                return None, method
+            if _looks_like_bot_block(text):
+                logger.warning(
+                    "fetch_document_content: %s returned an access-denied / bot-block "
+                    "page via Playwright (%s)",
+                    document.url,
+                    "browser UA"
+                    if method == Document.FetchMethod.PLAYWRIGHT_BROWSER
+                    else "TosDiff UA",
+                )
+                continue
             Document.objects.filter(pk=document.pk).update(
                 document_format=Document.DocumentFormat.HTML
             )
             document.document_format = Document.DocumentFormat.HTML
-            return text or None, Document.FetchMethod.PLAYWRIGHT
-        except Exception as exc:
-            logger.error("Failed to fetch %s via Playwright: %s", document.url, exc)
-            return None, Document.FetchMethod.PLAYWRIGHT
+            return text or None, method
 
-    return None, Document.FetchMethod.REQUESTS
+    # Every rung on the ladder came back as a bot-block page — mark the
+    # document failing so the daily run stops polling it and the changing
+    # error-reference values never produce false change digests.
+    logger.warning(
+        "fetch_document_content: %s still bot-blocked after exhausting fetch "
+        "ladder — marking document as failing",
+        document.url,
+    )
+    Document.objects.filter(pk=document.pk).update(
+        is_failing=True,
+        last_checked=timezone.now(),
+    )
+    document.is_failing = True
+    return None, ladder[-1]
 
 
 def create_snapshot_if_changed(

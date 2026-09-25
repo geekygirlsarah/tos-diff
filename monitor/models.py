@@ -129,6 +129,10 @@ class Document(models.Model):
     class FetchMethod(models.TextChoices):
         REQUESTS = "requests", "HTTP Requests"
         PLAYWRIGHT = "playwright", "Playwright (headless browser)"
+        PLAYWRIGHT_BROWSER = (
+            "playwright_browser",
+            "Playwright (real browser User-Agent)",
+        )
 
     class DocumentFormat(models.TextChoices):
         HTML = "html", "HTML"

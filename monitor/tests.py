@@ -597,6 +597,31 @@ class PlaywrightBrowserReuseTest(TestCase):
 
     @patch("monitor.services._rate_limit")
     @patch("playwright.sync_api.sync_playwright")
+    def test_context_uses_tosdiff_ua_by_default(self, mock_sync, mock_rate):  # noqa: ARG002
+        _pw, browser = self._fake_sync_playwright(mock_sync)
+
+        from monitor.services import DEFAULT_HEADERS, fetch_html_playwright
+
+        fetch_html_playwright("https://example.com/tos")
+
+        self.assertEqual(
+            browser.new_context.call_args.kwargs["user_agent"],
+            DEFAULT_HEADERS["User-Agent"],
+        )
+
+    @patch("monitor.services._rate_limit")
+    @patch("playwright.sync_api.sync_playwright")
+    def test_context_uses_custom_user_agent_when_provided(self, mock_sync, mock_rate):  # noqa: ARG002
+        _pw, browser = self._fake_sync_playwright(mock_sync)
+
+        from monitor.services import fetch_html_playwright
+
+        fetch_html_playwright("https://example.com/tos", user_agent="tester-agent")
+
+        self.assertEqual(browser.new_context.call_args.kwargs["user_agent"], "tester-agent")
+
+    @patch("monitor.services._rate_limit")
+    @patch("playwright.sync_api.sync_playwright")
     def test_launches_single_browser_for_multiple_fetches(self, mock_sync, mock_rate):  # noqa: ARG002
         pw, browser = self._fake_sync_playwright(mock_sync)
 
@@ -1045,6 +1070,32 @@ class BotBlockPageTest(TestCase):
         self.doc.refresh_from_db()
         self.assertTrue(self.doc.is_failing)
         self.assertEqual(DocumentSnapshot.objects.filter(document=self.doc).count(), 0)
+        # Escalated to the realistic browser UA before giving up.
+        self.assertEqual(mock_playwright.call_count, 2)
+
+    @patch("monitor.services.fetch_html_playwright")
+    @patch("monitor.services.requests.get")
+    def test_playwright_escalates_to_real_browser_ua_after_block(self, mock_get, mock_playwright):
+        mock_get.return_value = self._response(self.AKAMAI_BLOCK_HTML)
+        mock_playwright.side_effect = [
+            self.AKAMAI_BLOCK_HTML.decode(),
+            "<html><body><p>Real Terms content</p></body></html>",
+        ]
+
+        snapshot, created = fetch_and_snapshot(self.doc)
+
+        self.assertTrue(created)
+        self.assertIsNotNone(snapshot)
+        self.doc.refresh_from_db()
+        self.assertFalse(self.doc.is_failing)
+        self.assertEqual(self.doc.fetch_method, Document.FetchMethod.PLAYWRIGHT_BROWSER)
+
+        from monitor import services
+        from monitor.services import REAL_BROWSER_USER_AGENT
+
+        user_agents = [call.kwargs["user_agent"] for call in mock_playwright.call_args_list]
+        self.assertEqual(user_agents[0], services.DEFAULT_HEADERS["User-Agent"])
+        self.assertEqual(user_agents[1], REAL_BROWSER_USER_AGENT)
 
     @patch("monitor.services.fetch_html_playwright")
     @patch("monitor.services.requests.get")
@@ -1071,6 +1122,65 @@ class BotBlockPageTest(TestCase):
         self.assertFalse(created)
         self.doc.refresh_from_db()
         self.assertTrue(self.doc.is_failing)
+        self.assertEqual(DocumentSnapshot.objects.filter(document=self.doc).count(), 0)
+
+    @patch("monitor.services.fetch_html_playwright")
+    def test_playwright_method_escalation_persists_browser_method(self, mock_playwright):
+        from monitor import services
+
+        self.doc.fetch_method = Document.FetchMethod.PLAYWRIGHT
+        self.doc.save()
+        mock_playwright.side_effect = [
+            self.AKAMAI_BLOCK_HTML.decode(),
+            "<html><body><p>Real Terms content</p></body></html>",
+        ]
+
+        snapshot, created = fetch_and_snapshot(self.doc)
+
+        self.assertTrue(created)
+        self.assertIsNotNone(snapshot)
+        self.doc.refresh_from_db()
+        self.assertFalse(self.doc.is_failing)
+        self.assertEqual(self.doc.fetch_method, Document.FetchMethod.PLAYWRIGHT_BROWSER)
+        self.assertEqual(
+            [call.kwargs["user_agent"] for call in mock_playwright.call_args_list],
+            [services.DEFAULT_HEADERS["User-Agent"], services.REAL_BROWSER_USER_AGENT],
+        )
+
+    @patch("monitor.services.fetch_html_playwright")
+    @patch("monitor.services.requests.get")
+    def test_playwright_browser_method_fetches_directly_with_browser_ua(
+        self, mock_get, mock_playwright
+    ):
+        from monitor.services import REAL_BROWSER_USER_AGENT
+
+        self.doc.fetch_method = Document.FetchMethod.PLAYWRIGHT_BROWSER
+        self.doc.save()
+        mock_playwright.return_value = "<html><body><p>Real Terms content</p></body></html>"
+
+        snapshot, created = fetch_and_snapshot(self.doc)
+
+        self.assertTrue(created)
+        self.assertIsNotNone(snapshot)
+        mock_get.assert_not_called()
+        self.assertEqual(mock_playwright.call_count, 1)
+        self.assertEqual(mock_playwright.call_args.kwargs["user_agent"], REAL_BROWSER_USER_AGENT)
+        self.doc.refresh_from_db()
+        self.assertEqual(self.doc.fetch_method, Document.FetchMethod.PLAYWRIGHT_BROWSER)
+
+    @patch("monitor.services.fetch_html_playwright")
+    def test_playwright_browser_method_marks_failing_single_poke(self, mock_playwright):
+        self.doc.fetch_method = Document.FetchMethod.PLAYWRIGHT_BROWSER
+        self.doc.save()
+        mock_playwright.return_value = self.AKAMAI_BLOCK_HTML.decode()
+
+        snapshot, created = fetch_and_snapshot(self.doc)
+
+        self.assertIsNone(snapshot)
+        self.assertFalse(created)
+        self.doc.refresh_from_db()
+        self.assertTrue(self.doc.is_failing)
+        self.assertEqual(mock_playwright.call_count, 1)
         self.assertEqual(DocumentSnapshot.objects.filter(document=self.doc).count(), 0)
 
 

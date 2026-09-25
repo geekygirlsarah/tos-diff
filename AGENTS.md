@@ -246,7 +246,7 @@ All three jobs must pass before merging.
 - `name` — optional custom name; falls back to document type display name
 - `document_type` — `TextChoices` enum (tos, privacy, cookie, refund, childrens_privacy, subscription, service_agreement, service_fees, user_agreement, conduct, acceptable_use, dmca, payment_service, other)
 - `other_document_type` — free-text label when `document_type = "other"`
-- `url`, `fetch_method` (`requests` or `playwright`), `document_format` (`html`, `pdf`, `txt`)
+- `url`, `fetch_method` (`requests`, `playwright`, or `playwright_browser` — see below), `document_format` (`html`, `pdf`, `txt`)
 - `language` FK → `Language` (nullable, `PROTECT`)
 - `country` FK → `Country` (nullable, `SET_NULL`)
 - `last_checked`, `last_changed` (DateTimeField, nullable)
@@ -255,7 +255,7 @@ All three jobs must pass before merging.
 - `custom_selectors` — CSS selectors to strip before extraction, one per line
 - `fetch_config` — JSONField for Playwright options (`wait_for_selector`, `sleep_seconds`, `dismiss_selectors`, `challenge_timeout`)
 - The Playwright fetcher (`fetch_html_playwright`) waits for Cloudflare verification challenges to auto-resolve before extracting: it detects challenge pages via URL markers / Turnstile iframes / body text, polls every ~10s for a redirect (max `challenge_timeout` seconds, default 30) and raises `RuntimeError` when unresolved so challenge HTML is never persisted as a snapshot.
-- `fetch_document_content` also detects access-denied / bot-block interstitials (e.g. Akamai "Access Denied" pages with an error reference) via `_looks_like_bot_block` in `services.py`, which requires both a denial phrase and an error-reference marker (`errors.edgesuite.net`, `reference #`, …) to avoid misclassifying real documents. When the plain-HTTP path hits one it retries with Playwright; if the block page persists, the document is marked `is_failing` (no snapshot is stored, so the changing "Reference #" values never produce false change digests). Failing documents are skipped by the daily run and must be cleared manually in admin once access is restored.
+- `fetch_document_content` also detects access-denied / bot-block interstitials (e.g. Akamai "Access Denied" pages with an error reference) via `_looks_like_bot_block` in `services.py`, which requires both a denial phrase and an error-reference marker (`errors.edgesuite.net`, `reference #`, …) to avoid misclassifying real documents. Fetching is a persisted fallback ladder: plain HTTP first, then Playwright with the transparent `TosDiff-Monitor` User-Agent, then Playwright with a realistic browser UA (`REAL_BROWSER_USER_AGENT` in `services.py`); a `playwright` document starts two rungs up and a `playwright_browser` document jumps straight to the browser UA. The rung that succeeds is returned and persisted as the document's new `fetch_method`, so future runs start where the site last worked. If the block page persists across the ladder the document is marked `is_failing` (no snapshot is stored, so the changing "Reference #" values never produce false change digests). Failing documents are skipped by the daily run and must be cleared manually in admin once access is restored.
 - Unique together: `(organization, document_type, url)`
 
 ### `DocumentSnapshot`
