@@ -76,6 +76,7 @@ class DocumentSnapshotInline(admin.TabularInline):
 
 @admin.register(Document)
 class DocumentAdmin(admin.ModelAdmin):
+    ordering = ["organization__name", "name", "document_type"]
     list_display = [
         "organization",
         "display_name",

@@ -255,7 +255,7 @@ class Document(models.Model):
     )
 
     class Meta:
-        ordering = ["organization", "document_type"]
+        ordering = ["organization__name", "name", "document_type"]
         unique_together = [("organization", "document_type", "url")]
 
     @property

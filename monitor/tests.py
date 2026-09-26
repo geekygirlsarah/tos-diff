@@ -209,6 +209,35 @@ class DocumentModelTest(TestCase):
         doc = Document.objects.create(organization=self.org, url="https://acme.com/tos")
         self.assertTrue(doc.is_active)
 
+    def test_default_ordering_by_company_then_document(self):
+        zeta = Organization.objects.create(name="Zeta Corp", website_url="https://zeta.com")
+        alpha = Organization.objects.create(name="Alpha Corp", website_url="https://alpha.com")
+
+        doc_z_tos = Document.objects.create(
+            organization=zeta,
+            url="https://zeta.com/tos",
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+        )
+        doc_a_tos = Document.objects.create(
+            organization=alpha,
+            url="https://alpha.com/tos",
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+        )
+        doc_a_privacy = Document.objects.create(
+            organization=alpha,
+            url="https://alpha.com/privacy",
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+        )
+        doc_a_custom = Document.objects.create(
+            organization=alpha,
+            name="API Terms",
+            url="https://alpha.com/api-terms",
+            document_type=Document.DocumentType.OTHER,
+        )
+
+        docs = list(Document.objects.all())
+        self.assertEqual(docs, [doc_a_privacy, doc_a_tos, doc_a_custom, doc_z_tos])
+
 
 class DocumentSnapshotModelTest(TestCase):
     def setUp(self):
@@ -2024,6 +2053,34 @@ class OrganizationsViewTest(TestCase):
         response = self.client.get(reverse("monitor:organizations"))
         self.assertContains(response, "icons.duckduckgo.com/ip3/meta.com.ico")
 
+    def test_organization_documents_sorted_by_document(self):
+        org = Organization.objects.create(name="Acme Corp", website_url="https://acmecorp.com")
+        doc_tos = Document.objects.create(
+            organization=org,
+            url="https://acmecorp.com/tos",
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+        )
+        doc_cookie = Document.objects.create(
+            organization=org,
+            url="https://acmecorp.com/cookie",
+            document_type=Document.DocumentType.COOKIE_POLICY,
+        )
+        doc_privacy = Document.objects.create(
+            organization=org,
+            url="https://acmecorp.com/privacy",
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+        )
+        doc_api = Document.objects.create(
+            organization=org,
+            name="API Agreement",
+            url="https://acmecorp.com/api",
+            document_type=Document.DocumentType.OTHER,
+        )
+        response = self.client.get(reverse("monitor:organizations"))
+        org_obj = next(o for o in response.context["organizations"] if o.pk == org.pk)
+        docs = list(org_obj.documents.all())
+        self.assertEqual(docs, [doc_cookie, doc_privacy, doc_tos, doc_api])
+
 
 class AboutViewTest(TestCase):
     def test_returns_200(self):
@@ -2308,6 +2365,14 @@ class SuggestionAdminTest(TestCase):
         self.assertEqual(self.suggestion.status, Suggestion.Status.REJECTED)
 
 
+class DocumentAdminTest(TestCase):
+    def test_document_admin_ordering(self):
+        from .admin import DocumentAdmin
+
+        doc_admin = DocumentAdmin(model=Document, admin_site=admin.site)
+        self.assertEqual(doc_admin.ordering, ["organization__name", "name", "document_type"])
+
+
 class LoginCodeModelTest(TestCase):
     def test_created_at_auto_set(self):
         code = LoginCode.objects.create(
@@ -2570,6 +2635,33 @@ class AccountViewTest(TestCase):
         org_subs = list(response.context["organization_subscriptions"])
         self.assertEqual(len(org_subs), 1)
         self.assertEqual(org_subs[0].organization.name, "Acme")
+
+    def test_document_subscriptions_sorted_by_company_then_document(self):
+        zeta = Organization.objects.create(name="Zeta Corp", website_url="https://zeta.com")
+        alpha = Organization.objects.create(name="Alpha Corp", website_url="https://alpha.com")
+        doc_z = Document.objects.create(
+            organization=zeta,
+            url="https://zeta.com/terms",
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+        )
+        doc_a_tos = Document.objects.create(
+            organization=alpha,
+            url="https://alpha.com/terms",
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+        )
+        doc_a_privacy = Document.objects.create(
+            organization=alpha,
+            url="https://alpha.com/privacy",
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+        )
+        DocumentSubscription.objects.all().delete()
+        DocumentSubscription.objects.create(user=self.user, document=doc_z)
+        DocumentSubscription.objects.create(user=self.user, document=doc_a_tos)
+        DocumentSubscription.objects.create(user=self.user, document=doc_a_privacy)
+
+        response = self.client.get(reverse("monitor:account"))
+        subs = list(response.context["document_subscriptions"])
+        self.assertEqual([s.document for s in subs], [doc_a_privacy, doc_a_tos, doc_z])
 
 
 # ---------------------------------------------------------------------------
@@ -3039,6 +3131,29 @@ class ManageDocumentViewsTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(Document.objects.count(), 1)
 
+    def test_list_sorted_by_company_first_then_document(self):
+        zeta = Organization.objects.create(name="Zeta Corp", website_url="https://zeta.com")
+        alpha = Organization.objects.create(name="Alpha Corp", website_url="https://alpha.com")
+        doc_z = Document.objects.create(
+            organization=zeta,
+            url="https://zeta.com/terms",
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+        )
+        doc_a_tos = Document.objects.create(
+            organization=alpha,
+            url="https://alpha.com/terms",
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+        )
+        doc_a_privacy = Document.objects.create(
+            organization=alpha,
+            url="https://alpha.com/privacy",
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+        )
+        Document.objects.filter(organization=self.org).delete()
+        response = self.client.get(reverse("monitor:manage_documents"))
+        docs = list(response.context["documents"])
+        self.assertEqual(docs, [doc_a_privacy, doc_a_tos, doc_z])
+
 
 class ManageSuggestionViewsTest(TestCase):
     def setUp(self):
@@ -3362,6 +3477,32 @@ class ManageAttentionViewTest(TestCase):
         response = self.client.get(reverse("monitor:manage_attention"))
         context = response.context
         self.assertIn(self.never_checked.pk, [d.pk for d in context["no_snapshot_documents"]])
+
+    def test_attention_documents_sorted_by_company_then_document(self):
+        zeta = Organization.objects.create(name="Zeta Corp", website_url="https://zeta.com")
+        alpha = Organization.objects.create(name="Alpha Corp", website_url="https://alpha.com")
+        doc_z = Document.objects.create(
+            organization=zeta,
+            url="https://zeta.com/failing",
+            is_failing=True,
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+        )
+        doc_a_tos = Document.objects.create(
+            organization=alpha,
+            url="https://alpha.com/failing-tos",
+            is_failing=True,
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+        )
+        doc_a_privacy = Document.objects.create(
+            organization=alpha,
+            url="https://alpha.com/failing-privacy",
+            is_failing=True,
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+        )
+        Document.objects.filter(organization=self.org).delete()
+        response = self.client.get(reverse("monitor:manage_attention"))
+        failing_docs = list(response.context["failing_documents"])
+        self.assertEqual(failing_docs, [doc_a_privacy, doc_a_tos, doc_z])
 
 
 class ManageUserListViewTest(TestCase):
@@ -3756,6 +3897,61 @@ class SendDailyDigestTaskTest(TestCase):
             result = send_daily_digests()
         self.assertEqual(result["sent"], 0)
         mock_send.assert_not_called()
+
+    def test_digest_email_lists_documents_alphabetized(self):
+        zeta = Organization.objects.create(name="Zeta Corp", website_url="https://zeta.com")
+        alpha = Organization.objects.create(name="Alpha Corp", website_url="https://alpha.com")
+        doc_z = Document.objects.create(
+            organization=zeta,
+            url="https://zeta.com/terms",
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+        )
+        doc_a_tos = Document.objects.create(
+            organization=alpha,
+            url="https://alpha.com/terms",
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+        )
+        doc_a_cookie = Document.objects.create(
+            organization=alpha,
+            url="https://alpha.com/cookie",
+            document_type=Document.DocumentType.COOKIE_POLICY,
+        )
+        snap_z = DocumentSnapshot.objects.create(
+            document=doc_z, cleaned_text="z terms", text_hash="hz"
+        )
+        snap_a_tos = DocumentSnapshot.objects.create(
+            document=doc_a_tos, cleaned_text="a terms", text_hash="hat"
+        )
+        snap_a_cookie = DocumentSnapshot.objects.create(
+            document=doc_a_cookie, cleaned_text="a cookie", text_hash="hac"
+        )
+        DocumentSubscription.objects.create(user=self.daily, document=doc_z)
+        DocumentSubscription.objects.create(user=self.daily, document=doc_a_tos)
+        DocumentSubscription.objects.create(user=self.daily, document=doc_a_cookie)
+
+        # Clear existing pending notifications from setUp
+        PendingNotification.objects.all().delete()
+
+        # Queue notifications out of alphabetical order
+        with patch("monitor.tasks.send_mail"):
+            send_change_notifications(doc_z.pk, snap_z.pk)
+            send_change_notifications(doc_a_tos.pk, snap_a_tos.pk)
+            send_change_notifications(doc_a_cookie.pk, snap_a_cookie.pk)
+
+        with patch("monitor.tasks.send_mail") as mock_send:
+            send_daily_digests()
+
+        mock_send.assert_called_once()
+        body = mock_send.call_args[0][1]
+
+        alpha_cookie_pos = body.find("Alpha Corp — Cookie Policy")
+        alpha_tos_pos = body.find("Alpha Corp — Terms of Service")
+        zeta_tos_pos = body.find("Zeta Corp — Terms of Service")
+
+        self.assertNotEqual(alpha_cookie_pos, -1)
+        self.assertNotEqual(alpha_tos_pos, -1)
+        self.assertNotEqual(zeta_tos_pos, -1)
+        self.assertTrue(alpha_cookie_pos < alpha_tos_pos < zeta_tos_pos)
 
 
 class SendWeeklyDigestTaskTest(TestCase):

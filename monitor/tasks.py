@@ -190,10 +190,17 @@ def _send_digest(frequency: str, digest_label: str) -> dict:
         pending = list(
             user.pending_notifications.select_related(
                 "document__organization", "snapshot", "old_snapshot"
-            ).order_by("created_at")
+            )
         )
         if not pending:
             continue
+
+        pending.sort(
+            key=lambda n: (
+                n.document.organization.name.lower(),
+                n.document.display_name.lower(),
+            )
+        )
 
         plain_lines = [
             "Here's a summary of documents that changed:",

@@ -510,7 +510,7 @@ class AccountView(LoginRequiredMixin, TemplateView):
         context["document_subscriptions"] = (
             DocumentSubscription.objects.filter(user=user)
             .select_related("document__organization__parent")
-            .order_by("document__organization__name", "document__document_type")
+            .order_by("document__organization__name", "document__name", "document__document_type")
         )
         context["organization_subscriptions"] = (
             OrganizationSubscription.objects.filter(user=user)
@@ -682,7 +682,7 @@ class ManageDocumentListView(SuperuserRequiredMixin, ListView):
     def get_queryset(self):
         qs = Document.objects.select_related(
             "organization__parent", "language", "country"
-        ).order_by("organization__name", "document_type", "url")
+        ).order_by("organization__name", "name", "document_type", "url")
         organization_id = self.request.GET.get("organization")
         document_type = self.request.GET.get("type")
         if organization_id:
@@ -934,17 +934,17 @@ class ManageAttentionView(SuperuserRequiredMixin, TemplateView):
         context["failing_documents"] = list(
             Document.objects.filter(is_failing=True)
             .select_related("organization__parent")
-            .order_by("organization__name", "document_type")
+            .order_by("organization__name", "name", "document_type")
         )
         context["never_checked_documents"] = list(
             Document.objects.filter(last_checked__isnull=True)
             .select_related("organization__parent")
-            .order_by("organization__name", "document_type")
+            .order_by("organization__name", "name", "document_type")
         )
         context["no_snapshot_documents"] = list(
             Document.objects.filter(snapshots__isnull=True)
             .select_related("organization__parent")
-            .order_by("organization__name", "document_type")
+            .order_by("organization__name", "name", "document_type")
         )
         return context
 
