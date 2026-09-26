@@ -23,6 +23,14 @@
   </div>
 </div>
 
+<div class="d-flex flex-wrap align-items-center gap-2 mb-4">
+  <span class="small fw-semibold me-1" style="color: var(--td-text-muted);">Newly tracked in:</span>
+  {% for d in valid_days %}
+  <a href="?days={{ d }}" class="td-chip {% if days == d %}active{% endif %}"
+     aria-current="{% if days == d %}true{% else %}false{% endif %}">{{ d }} days</a>
+  {% endfor %}
+</div>
+
 {% if organizations %}
   <div class="d-flex flex-column gap-4">
     {% for org in organizations %}
@@ -44,6 +52,10 @@
           <span class="td-badge" style="background: var(--td-accent-light); color: var(--td-accent);">
             {{ org.get_category_display }}
           </span>
+          {% endif %}
+          {% if org.is_new %}
+          <span class="td-badge td-badge-new td-badge-new-org"
+                title="Newly tracked in the last {{ days }} days">New</span>
           {% endif %}
           {% if org.is_failing %}
           <span class="td-badge td-badge-error">Error</span>

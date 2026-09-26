@@ -87,16 +87,67 @@ def _tracked_organizations():
     return Organization.objects.filter(id__in=root_ids)
 
 
+def _window_days(request) -> int:
+    """Read the ``?days=`` query param, falling back to DEFAULT_DAYS when invalid."""
+    try:
+        days = int(request.GET.get("days", DEFAULT_DAYS))
+    except (ValueError, TypeError):
+        days = DEFAULT_DAYS
+    return days if days in VALID_DAYS else DEFAULT_DAYS
+
+
+def _new_organization_ids(organization_ids: set[int], days: int) -> set[int]:
+    """
+    Return the subset of *organization_ids* that TosDiff has only just started tracking.
+
+    An organization counts as new when it has no snapshot older than the start of
+    the *days* window, i.e. every snapshot we hold for it is inside the window.
+    This is deliberately independent of its documents being new: adding a brand new
+    document to a long-tracked organization does not make the organization new.
+    """
+    if not organization_ids:
+        return set()
+    cutoff = timezone.now() - timezone.timedelta(days=days)
+    established_ids = set(
+        DocumentSnapshot.objects.filter(
+            document__organization_id__in=organization_ids,
+            captured_at__lt=cutoff,
+        )
+        .values_list("document__organization_id", flat=True)
+        .distinct()
+    )
+    return organization_ids - established_ids
+
+
+def _flag_new_organizations(orgs: list[Organization], days: int) -> None:
+    """Annotate every organization in *orgs* (roots and nested subsidiaries) with ``is_new``."""
+    ids: set[int] = set()
+
+    def collect(org: Organization) -> None:
+        ids.add(org.pk)
+        for child in org.nested_subsidiaries:  # type: ignore[attr-defined]
+            collect(child)
+
+    for org in orgs:
+        collect(org)
+
+    new_ids = _new_organization_ids(ids, days)
+
+    def apply(org: Organization) -> None:
+        org.is_new = org.pk in new_ids  # type: ignore[attr-defined]
+        for child in org.nested_subsidiaries:  # type: ignore[attr-defined]
+            apply(child)
+
+    for org in orgs:
+        apply(org)
+
+
 class RecentChangesView(ListView):
     template_name = "monitor/home.html"
     context_object_name = "day_groups"
 
     def _get_days(self) -> int:
-        try:
-            days = int(self.request.GET.get("days", DEFAULT_DAYS))
-        except (ValueError, TypeError):
-            days = DEFAULT_DAYS
-        return days if days in VALID_DAYS else DEFAULT_DAYS
+        return _window_days(self.request)
 
     def _get_doc_type(self) -> str:
         doc_type = self.request.GET.get("type", "")
@@ -115,20 +166,31 @@ class RecentChangesView(ListView):
         doc_type = self._get_doc_type()
         if doc_type:
             qs = qs.filter(document__document_type=doc_type)
+        # A snapshot is "new" when no earlier snapshot of the same document exists,
+        # i.e. it is the document's first (baseline) capture.
+        qs = qs.annotate(
+            is_new=~Exists(
+                DocumentSnapshot.objects.filter(
+                    document=OuterRef("document"),
+                    captured_at__lt=OuterRef("captured_at"),
+                )
+            )
+        )
         # Order by day (newest first), then organization (A–Z), then most recent first.
         return qs.order_by("-captured_at__date", "document__organization__name", "-captured_at")
 
-    def _group_snapshots(self, snapshots):
-        """Return [{date, organizations: [{organization, snapshots}]}] groups."""
+    def _group_snapshots(self, snapshots, new_organization_ids: set[int]) -> list[dict]:
+        """Return [{date, organizations: [{organization, snapshots, is_new}]}] groups."""
         day_groups = []
         for day, day_snaps in groupby(snapshots, key=lambda s: s.captured_at.date()):
             organizations = []
-            for _, org_snaps in groupby(day_snaps, key=lambda s: s.document.organization_id):
+            for org_id, org_snaps in groupby(day_snaps, key=lambda s: s.document.organization_id):
                 org_snaps = list(org_snaps)
                 organizations.append(
                     {
                         "organization": org_snaps[0].document.organization,
                         "snapshots": org_snaps,
+                        "is_new": org_id in new_organization_ids,
                     }
                 )
             day_groups.append({"date": day, "organizations": organizations})
@@ -146,7 +208,11 @@ class RecentChangesView(ListView):
         context["total_documents"] = Document.objects.count()
 
         # Group the (already ordered) snapshots by day, then organization.
-        context["day_groups"] = self._group_snapshots(list(context["day_groups"]))
+        snapshots = list(context["day_groups"])
+        new_organization_ids = _new_organization_ids(
+            {s.document.organization_id for s in snapshots}, days
+        )
+        context["day_groups"] = self._group_snapshots(snapshots, new_organization_ids)
 
         # Distinct document types present in the current time-window
         type_values = (
@@ -280,9 +346,15 @@ class OrganizationsView(ListView):
 
     def get_context_data(self, **kwargs) -> dict:
         context = super().get_context_data(**kwargs)
+        days = _window_days(self.request)
         context["page_title"] = "Organizations"
+        context["days"] = days
+        context["valid_days"] = VALID_DAYS
         context["total_organizations"] = len(context["organizations"])
         context["total_documents"] = Document.objects.count()
+
+        # Flag newly tracked organizations (same window-relative rule as the home page).
+        _flag_new_organizations(context["organizations"], days)
 
         user = self.request.user
         if user.is_authenticated:

@@ -24,6 +24,10 @@
           {{ subsidiary.get_category_display }}
         </span>
         {% endif %}
+        {% if subsidiary.is_new %}
+        <span class="td-badge td-badge-new td-badge-new-org"
+              title="Newly tracked in the last {{ days }} days">New</span>
+        {% endif %}
         {% if subsidiary.is_failing %}
         <span class="td-badge td-badge-error">Error</span>
         {% endif %}

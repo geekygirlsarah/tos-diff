@@ -18,8 +18,9 @@ from django.core import mail
 from django.core.mail import EmailMessage, EmailMultiAlternatives
 from django.core.mail.backends.smtp import EmailBackend as SMTPEmailBackend
 from django.core.serializers.json import DjangoJSONEncoder
-from django.db import IntegrityError
+from django.db import IntegrityError, connection
 from django.test import Client, TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -1990,6 +1991,260 @@ class HomePageGroupingTest(TestCase):
         self.assertContains(response, "icons.duckduckgo.com/ip3/hbo.com.ico")
 
 
+class HomePageNewDocumentBadgeTest(TestCase):
+    """A document's first-ever snapshot is flagged as new on the home page feed."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name="HBO", website_url="https://hbo.com")
+        self.tos_doc = Document.objects.create(
+            organization=self.org,
+            url="https://hbo.com/tos",
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+        )
+        self.privacy_doc = Document.objects.create(
+            organization=self.org,
+            url="https://hbo.com/privacy",
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+        )
+
+    def _snapshot(self, document, text="content"):
+        return DocumentSnapshot.objects.create(
+            document=document,
+            cleaned_text=text,
+            text_hash=compute_hash(text),
+        )
+
+    def _flags(self, response):
+        """Map snapshot pk -> is_new for every snapshot in the rendered feed."""
+        return {
+            snapshot.pk: snapshot.is_new
+            for day in response.context["day_groups"]
+            for org_group in day["organizations"]
+            for snapshot in org_group["snapshots"]
+        }
+
+    def _flags_by_document(self, response):
+        """Map document_id -> list of is_new flags (newest snapshot first)."""
+        result: dict[int, list[bool]] = {}
+        for day in response.context["day_groups"]:
+            for org_group in day["organizations"]:
+                for snapshot in org_group["snapshots"]:
+                    result.setdefault(snapshot.document_id, []).append(snapshot.is_new)
+        return result
+
+    def test_first_snapshot_is_flagged_new(self):
+        snapshot = self._snapshot(self.tos_doc)
+        flags = self._flags(self.client.get(reverse("monitor:home")))
+        self.assertIs(flags[snapshot.pk], True)
+
+    def test_later_snapshots_are_not_flagged_new(self):
+        self._snapshot(self.tos_doc, "v1")
+        self._snapshot(self.tos_doc, "v2")
+        flags = self._flags(self.client.get(reverse("monitor:home")))
+        self.assertEqual(sorted(flags.values()), [False, True])
+
+    def test_new_flag_is_scoped_per_document(self):
+        """One document's history must not mark another document's snapshot as not-new."""
+        self._snapshot(self.tos_doc, "v1")
+        self._snapshot(self.tos_doc, "v2")
+        self._snapshot(self.privacy_doc, "v1")
+        flags = self._flags_by_document(self.client.get(reverse("monitor:home")))
+        self.assertEqual(flags[self.privacy_doc.pk], [True])
+        self.assertEqual(sorted(flags[self.tos_doc.pk]), [False, True])
+
+    def test_first_snapshot_outside_window_does_not_flag_later_ones(self):
+        """An old baseline snapshot keeps later in-window snapshots marked as changed."""
+        stale = self._snapshot(self.tos_doc, "v1")
+        DocumentSnapshot.objects.filter(pk=stale.pk).update(
+            captured_at=timezone.now() - timezone.timedelta(days=60)
+        )
+        self._snapshot(self.tos_doc, "v2")
+        flags = self._flags_by_document(self.client.get(reverse("monitor:home")))
+        self.assertEqual(flags[self.tos_doc.pk], [False])
+
+    def test_homepage_renders_new_badge(self):
+        self._snapshot(self.tos_doc)
+        response = self.client.get(reverse("monitor:home"))
+        # NB: assert on the rendered badge markup — "td-badge-new" also matches the
+        # stylesheet rule in base.html, so it cannot be used as a presence marker.
+        self.assertContains(response, '<span class="td-badge td-badge-new">New</span>', html=True)
+
+    def test_homepage_marks_only_the_new_document(self):
+        """A long-tracked document renders no badge while a freshly added one does."""
+        stale = self._snapshot(self.tos_doc, "v1")
+        DocumentSnapshot.objects.filter(pk=stale.pk).update(
+            captured_at=timezone.now() - timezone.timedelta(days=60)
+        )
+        self._snapshot(self.tos_doc, "v2")
+        self._snapshot(self.privacy_doc, "v1")
+        response = self.client.get(reverse("monitor:home"))
+        self.assertEqual(response.content.count(b'<span class="td-badge td-badge-new">'), 1)
+
+    def test_new_badge_survives_document_type_filter(self):
+        self._snapshot(self.tos_doc)
+        response = self.client.get(
+            reverse("monitor:home"),
+            {"days": 7, "type": Document.DocumentType.TERMS_OF_SERVICE},
+        )
+        self.assertContains(response, '<span class="td-badge td-badge-new">New</span>', html=True)
+
+
+ORG_NEW_BADGE = '<span class="td-badge td-badge-new td-badge-new-org"'
+
+
+class HomePageNewOrganizationBadgeTest(TestCase):
+    """
+    An organization is flagged "new" when every snapshot it has was captured inside
+    the selected window, i.e. TosDiff has only just started tracking it. The flag is
+    deliberately *not* derived from its documents being new: adding a brand new
+    document to a long-tracked organization does not make that organization new.
+    """
+
+    def setUp(self):
+        self.org = Organization.objects.create(name="HBO", website_url="https://hbo.com")
+        self.doc = Document.objects.create(
+            organization=self.org,
+            url="https://hbo.com/tos",
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+        )
+
+    def _snapshot(self, document, text="content", days_ago=0):
+        snapshot = DocumentSnapshot.objects.create(
+            document=document, cleaned_text=text, text_hash=compute_hash(text)
+        )
+        if days_ago:
+            DocumentSnapshot.objects.filter(pk=snapshot.pk).update(
+                captured_at=timezone.now() - timezone.timedelta(days=days_ago)
+            )
+        return snapshot
+
+    def _org_flags(self, response):
+        """Map organization_id -> is_new for every organization in the rendered feed."""
+        return {
+            org_group["organization"].id: org_group["is_new"]
+            for day in response.context["day_groups"]
+            for org_group in day["organizations"]
+        }
+
+    def test_organization_with_only_recent_snapshots_is_new(self):
+        self._snapshot(self.doc)
+        flags = self._org_flags(self.client.get(reverse("monitor:home")))
+        self.assertIs(flags[self.org.pk], True)
+
+    def test_organization_with_history_before_window_is_not_new(self):
+        self._snapshot(self.doc, "v1", days_ago=60)
+        self._snapshot(self.doc, "v2")
+        flags = self._org_flags(self.client.get(reverse("monitor:home")))
+        self.assertIs(flags[self.org.pk], False)
+
+    def test_new_document_on_existing_organization_does_not_flag_organization(self):
+        """The document is new, but the organization it belongs to is not."""
+        self._snapshot(self.doc, "v1", days_ago=60)
+        brand_new_doc = Document.objects.create(
+            organization=self.org,
+            url="https://hbo.com/privacy",
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+        )
+        self._snapshot(brand_new_doc, "v1")
+        response = self.client.get(reverse("monitor:home"))
+        snapshots = {
+            s.document_id: s.is_new
+            for day in response.context["day_groups"]
+            for og in day["organizations"]
+            for s in og["snapshots"]
+        }
+        self.assertIs(snapshots[brand_new_doc.pk], True)
+        self.assertIs(self._org_flags(response)[self.org.pk], False)
+
+    def test_subsidiary_can_be_new_while_parent_is_not(self):
+        self._snapshot(self.doc, "v1", days_ago=60)
+        self._snapshot(self.doc, "v2", days_ago=1)
+        child = Organization.objects.create(
+            name="Max", website_url="https://max.com", parent=self.org
+        )
+        child_doc = Document.objects.create(
+            organization=child, url="https://max.com/tos", document_type="tos"
+        )
+        self._snapshot(child_doc, "v1")
+        flags = self._org_flags(self.client.get(reverse("monitor:home")))
+        self.assertIs(flags[child.pk], True)
+        self.assertIs(flags[self.org.pk], False)
+
+    def test_new_flag_is_relative_to_the_selected_window(self):
+        """A 10-day-old org reads as established at 7 days but new at 30 days."""
+        self._snapshot(self.doc, "v1", days_ago=10)
+        self._snapshot(self.doc, "v2", days_ago=1)
+        narrow = self._org_flags(self.client.get(reverse("monitor:home"), {"days": 7}))
+        self.assertIs(narrow[self.org.pk], False)
+        wide = self._org_flags(self.client.get(reverse("monitor:home"), {"days": 30}))
+        self.assertIs(wide[self.org.pk], True)
+
+    def test_organizations_with_mixed_history_are_scoped_per_organization(self):
+        other = Organization.objects.create(name="Netflix", website_url="https://netflix.com")
+        other_doc = Document.objects.create(
+            organization=other, url="https://netflix.com/tos", document_type="tos"
+        )
+        self._snapshot(self.doc, "v1", days_ago=60)
+        self._snapshot(self.doc, "v2")
+        self._snapshot(other_doc, "v1")
+        flags = self._org_flags(self.client.get(reverse("monitor:home")))
+        self.assertIs(flags[self.org.pk], False)
+        self.assertIs(flags[other.pk], True)
+
+    def test_organization_badge_is_distinct_from_document_badge(self):
+        self._snapshot(self.doc)
+        response = self.client.get(reverse("monitor:home"))
+        # Count the exact class attributes: "td-badge-new" is a substring of both
+        # "td-badge-new-org" and the stylesheet rule, so a plain count is ambiguous.
+        self.assertContains(response, ORG_NEW_BADGE)
+        self.assertEqual(
+            response.content.count(b'class="td-badge td-badge-new td-badge-new-org"'), 1
+        )
+        self.assertEqual(response.content.count(b'class="td-badge td-badge-new"'), 1)
+
+    def test_established_organization_renders_no_badge(self):
+        self._snapshot(self.doc, "v1", days_ago=60)
+        self._snapshot(self.doc, "v2")
+        response = self.client.get(reverse("monitor:home"))
+        self.assertNotContains(response, ORG_NEW_BADGE)
+
+    def test_new_badge_survives_document_type_filter(self):
+        self._snapshot(self.doc)
+        response = self.client.get(
+            reverse("monitor:home"),
+            {"days": 7, "type": Document.DocumentType.TERMS_OF_SERVICE},
+        )
+        self.assertContains(response, ORG_NEW_BADGE)
+
+    def test_organization_badge_coexists_with_error_badge(self):
+        self.doc.is_failing = True
+        self.doc.save()
+        self._snapshot(self.doc)
+        response = self.client.get(reverse("monitor:home"))
+        self.assertContains(response, ORG_NEW_BADGE)
+        self.assertContains(
+            response, '<span class="td-badge td-badge-error">Error</span>', html=True
+        )
+
+    def test_new_organization_flag_does_not_scale_queries(self):
+        """The org flag is one extra query in total, not one per organization."""
+        self._snapshot(self.doc)
+        with CaptureQueriesContext(connection) as one_org:
+            self.client.get(reverse("monitor:home"))
+
+        for i in range(4):
+            org = Organization.objects.create(name=f"Org {i}", website_url=f"https://org{i}.com")
+            doc = Document.objects.create(
+                organization=org, url=f"https://org{i}.com/tos", document_type="tos"
+            )
+            self._snapshot(doc, f"v{i}")
+
+        with CaptureQueriesContext(connection) as five_orgs:
+            self.client.get(reverse("monitor:home"))
+
+        self.assertEqual(len(one_org.captured_queries), len(five_orgs.captured_queries))
+
+
 class OrganizationsViewTest(TestCase):
     def setUp(self):
         self.parent = Organization.objects.create(name="Meta", website_url="https://meta.com")
@@ -2215,6 +2470,150 @@ class OrganizationsViewFilterTest(TestCase):
         Document.objects.create(organization=parent, url="https://bigcorp.com/tos")
         response = self.client.get(reverse("monitor:organizations"))
         self.assertNotContains(response, "EmptySub")
+
+
+class OrganizationsPageNewBadgeTest(TestCase):
+    """
+    The organizations page flags newly tracked organizations with the same green
+    "New" badge as the home page, using the same window-relative definition and
+    the same "newly tracked in:" day chips.
+    """
+
+    def setUp(self):
+        self.org = Organization.objects.create(name="HBO", website_url="https://hbo.com")
+        self.doc = Document.objects.create(
+            organization=self.org, url="https://hbo.com/tos", document_type="tos"
+        )
+
+    def _snapshot(self, document, text="content", days_ago=0):
+        snapshot = DocumentSnapshot.objects.create(
+            document=document, cleaned_text=text, text_hash=compute_hash(text)
+        )
+        if days_ago:
+            DocumentSnapshot.objects.filter(pk=snapshot.pk).update(
+                captured_at=timezone.now() - timezone.timedelta(days=days_ago)
+            )
+        return snapshot
+
+    def _flags(self, response):
+        """Map organization name -> is_new across roots and every nested subsidiary."""
+        found = {}
+
+        def walk(org):
+            found[org.name] = org.is_new
+            for child in org.nested_subsidiaries:
+                walk(child)
+
+        for org in response.context["organizations"]:
+            walk(org)
+        return found
+
+    def test_organization_with_only_recent_snapshots_is_new(self):
+        self._snapshot(self.doc)
+        flags = self._flags(self.client.get(reverse("monitor:organizations")))
+        self.assertIs(flags["HBO"], True)
+
+    def test_established_organization_is_not_new(self):
+        self._snapshot(self.doc, "v1", days_ago=60)
+        self._snapshot(self.doc, "v2")
+        flags = self._flags(self.client.get(reverse("monitor:organizations")))
+        self.assertIs(flags["HBO"], False)
+
+    def test_new_badge_rendered_for_new_organization(self):
+        self._snapshot(self.doc)
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertContains(response, ORG_NEW_BADGE)
+
+    def test_no_badge_for_established_organization(self):
+        self._snapshot(self.doc, "v1", days_ago=60)
+        self._snapshot(self.doc, "v2")
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertNotContains(response, ORG_NEW_BADGE)
+
+    def test_subsidiary_badge_rendered(self):
+        self._snapshot(self.doc, "v1", days_ago=60)
+        self._snapshot(self.doc, "v2", days_ago=1)
+        child = Organization.objects.create(
+            name="Max", website_url="https://max.com", parent=self.org
+        )
+        child_doc = Document.objects.create(
+            organization=child, url="https://max.com/tos", document_type="tos"
+        )
+        self._snapshot(child_doc)
+        response = self.client.get(reverse("monitor:organizations"))
+        flags = self._flags(response)
+        self.assertIs(flags["Max"], True)
+        self.assertIs(flags["HBO"], False)
+        # One badge, on the subsidiary only.
+        self.assertEqual(response.content.count(b"td-badge-new-org"), 1)
+
+    def test_nested_subsidiary_badge_rendered(self):
+        self._snapshot(self.doc, "v1", days_ago=60)
+        self._snapshot(self.doc, "v2", days_ago=1)
+        mid = Organization.objects.create(
+            name="Mid", website_url="https://mid.com", parent=self.org
+        )
+        mid_doc = Document.objects.create(
+            organization=mid, url="https://mid.com/tos", document_type="tos"
+        )
+        self._snapshot(mid_doc, "v1", days_ago=60)
+        self._snapshot(mid_doc, "v2", days_ago=1)
+        leaf = Organization.objects.create(name="Leaf", website_url="https://leaf.com", parent=mid)
+        leaf_doc = Document.objects.create(
+            organization=leaf, url="https://leaf.com/tos", document_type="tos"
+        )
+        self._snapshot(leaf_doc)
+        response = self.client.get(reverse("monitor:organizations"))
+        flags = self._flags(response)
+        self.assertIs(flags["Leaf"], True)
+        self.assertIs(flags["Mid"], False)
+        self.assertIs(flags["HBO"], False)
+        self.assertEqual(response.content.count(b"td-badge-new-org"), 1)
+
+    def test_new_flag_is_relative_to_the_selected_window(self):
+        self._snapshot(self.doc, "v1", days_ago=10)
+        self._snapshot(self.doc, "v2", days_ago=1)
+        narrow = self._flags(self.client.get(reverse("monitor:organizations"), {"days": 7}))
+        self.assertIs(narrow["HBO"], False)
+        wide = self._flags(self.client.get(reverse("monitor:organizations"), {"days": 30}))
+        self.assertIs(wide["HBO"], True)
+
+    def test_page_exposes_window_context(self):
+        response = self.client.get(reverse("monitor:organizations"), {"days": 30})
+        self.assertEqual(response.context["days"], 30)
+        self.assertEqual(tuple(response.context["valid_days"]), (3, 7, 14, 30))
+
+    def test_invalid_window_falls_back_to_default(self):
+        response = self.client.get(reverse("monitor:organizations"), {"days": "bogus"})
+        self.assertEqual(response.context["days"], 7)
+
+    def test_page_renders_window_chips(self):
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertContains(response, "Newly tracked in:")
+        self.assertContains(response, "?days=3")
+        self.assertContains(response, "?days=30")
+
+    def test_window_chip_carries_across_as_active_state(self):
+        response = self.client.get(reverse("monitor:organizations"), {"days": 14})
+        self.assertContains(response, 'aria-current="true"', count=1)
+
+    def test_new_flag_does_not_scale_queries(self):
+        """One query for the whole page, not one per organization."""
+        self._snapshot(self.doc)
+        with CaptureQueriesContext(connection) as one_org:
+            self.client.get(reverse("monitor:organizations"))
+
+        for i in range(4):
+            org = Organization.objects.create(name=f"Org {i}", website_url=f"https://org{i}.com")
+            doc = Document.objects.create(
+                organization=org, url=f"https://org{i}.com/tos", document_type="tos"
+            )
+            self._snapshot(doc, f"v{i}")
+
+        with CaptureQueriesContext(connection) as five_orgs:
+            self.client.get(reverse("monitor:organizations"))
+
+        self.assertEqual(len(one_org.captured_queries), len(five_orgs.captured_queries))
 
 
 class DocumentTypeFilterTest(TestCase):
@@ -3974,6 +4373,134 @@ class SendWeeklyDigestTaskTest(TestCase):
         mock_send.assert_called_once()
         self.assertEqual(mock_send.call_args[0][3], ["wally@example.com"])
         self.assertFalse(PendingNotification.objects.filter(user=weekly).exists())
+
+
+NEW_DOCS_HEADING = "New documents we're now tracking"
+CHANGED_DOCS_HEADING = "Documents that changed"
+
+
+class DigestNewDocumentSectionTest(TestCase):
+    """First-ever snapshots are listed in their own digest section, separate from changes."""
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="nina", email="nina@example.com")
+        NotificationPreference.objects.create(
+            user=self.user, frequency=NotificationPreference.Frequency.DAILY
+        )
+        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        # A newly tracked document: only ever had its baseline snapshot.
+        self.new_doc = Document.objects.create(
+            organization=self.org,
+            url="https://acme.com/privacy",
+            document_type=Document.DocumentType.PRIVACY_POLICY,
+        )
+        self.new_snapshot = DocumentSnapshot.objects.create(
+            document=self.new_doc, cleaned_text="baseline", text_hash="hb"
+        )
+        # A long-tracked document that has since changed.
+        self.old_doc = Document.objects.create(
+            organization=self.org,
+            url="https://acme.com/tos",
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+        )
+        DocumentSnapshot.objects.create(document=self.old_doc, cleaned_text="v1", text_hash="h1")
+        self.changed_snapshot = DocumentSnapshot.objects.create(
+            document=self.old_doc, cleaned_text="v2", text_hash="h2"
+        )
+        DocumentSubscription.objects.create(user=self.user, document=self.new_doc)
+        DocumentSubscription.objects.create(user=self.user, document=self.old_doc)
+        with patch("monitor.tasks.send_mail"):
+            send_change_notifications(self.new_doc.pk, self.new_snapshot.pk)
+            send_change_notifications(self.old_doc.pk, self.changed_snapshot.pk)
+
+    def _digest(self):
+        with patch("monitor.tasks.send_mail") as mock_send:
+            send_daily_digests()
+        mock_send.assert_called_once()
+        return (
+            mock_send.call_args[0][0],
+            mock_send.call_args[0][1],
+            mock_send.call_args[1]["html_message"],
+        )
+
+    def test_digest_body_has_both_sections(self):
+        _, body, _ = self._digest()
+        self.assertIn(NEW_DOCS_HEADING, body)
+        self.assertIn(CHANGED_DOCS_HEADING, body)
+
+    def test_new_document_appears_in_new_section(self):
+        _, body, _ = self._digest()
+        new_pos = body.index(NEW_DOCS_HEADING)
+        changed_pos = body.index(CHANGED_DOCS_HEADING)
+        self.assertTrue(new_pos < body.index("Privacy Policy") < changed_pos)
+
+    def test_changed_document_appears_in_changes_section(self):
+        _, body, _ = self._digest()
+        self.assertTrue(
+            body.index(CHANGED_DOCS_HEADING) < body.index("Terms of Service"),
+        )
+
+    def test_new_section_keeps_document_and_unsubscribe_links(self):
+        _, body, _ = self._digest()
+        self.assertIn(f"/document/{self.new_doc.pk}/", body)
+        self.assertIn("/unsubscribe/", body)
+
+    def test_html_body_has_both_section_headings(self):
+        _, _, html_body = self._digest()
+        self.assertIn(NEW_DOCS_HEADING, html_body)
+        self.assertIn(CHANGED_DOCS_HEADING, html_body)
+
+    def test_subject_counts_new_and_changed_separately(self):
+        subject, _, _ = self._digest()
+        self.assertIn("1 new document", subject)
+        self.assertIn("1 document change", subject)
+
+    def test_sections_are_sorted_within_themselves(self):
+        """Alphabetical ordering is preserved inside each section."""
+        for name in ("Zeta", "Alpha"):
+            org = Organization.objects.create(name=name, website_url=f"https://{name}.com")
+            doc = Document.objects.create(
+                organization=org,
+                url=f"https://{name}.com/cookie",
+                document_type=Document.DocumentType.COOKIE_POLICY,
+            )
+            snap = DocumentSnapshot.objects.create(
+                document=doc, cleaned_text="base", text_hash="hx"
+            )
+            DocumentSubscription.objects.create(user=self.user, document=doc)
+            with patch("monitor.tasks.send_mail"):
+                send_change_notifications(doc.pk, snap.pk)
+        _, body, _ = self._digest()
+        self.assertTrue(body.index("Alpha") < body.index("Zeta"))
+
+    def test_changes_only_digest_omits_new_section(self):
+        PendingNotification.objects.filter(snapshot=self.new_snapshot).delete()
+        subject, body, html_body = self._digest()
+        self.assertNotIn(NEW_DOCS_HEADING, body)
+        self.assertNotIn(NEW_DOCS_HEADING, html_body)
+        self.assertIn(CHANGED_DOCS_HEADING, body)
+        self.assertIn("1 document change", subject)
+        self.assertNotIn("new", subject)
+
+    def test_new_only_digest_omits_changes_section(self):
+        PendingNotification.objects.filter(snapshot=self.changed_snapshot).delete()
+        subject, body, html_body = self._digest()
+        self.assertNotIn(CHANGED_DOCS_HEADING, body)
+        self.assertNotIn(CHANGED_DOCS_HEADING, html_body)
+        self.assertIn(NEW_DOCS_HEADING, body)
+        self.assertIn("1 new document", subject)
+        self.assertNotIn("change", subject)
+
+    def test_weekly_digest_also_splits_sections(self):
+        NotificationPreference.objects.filter(user=self.user).update(
+            frequency=NotificationPreference.Frequency.WEEKLY
+        )
+        with patch("monitor.tasks.send_mail") as mock_send:
+            send_weekly_digests()
+        mock_send.assert_called_once()
+        body = mock_send.call_args[0][1]
+        self.assertIn(NEW_DOCS_HEADING, body)
+        self.assertIn(CHANGED_DOCS_HEADING, body)
 
 
 class ViewModuleAnnotationsTest(TestCase):

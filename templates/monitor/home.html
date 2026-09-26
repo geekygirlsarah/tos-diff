@@ -86,6 +86,10 @@
                      onerror="this.style.display='none'">
                 {% endif %}
                 <span class="fw-semibold">{{ org_group.organization.name }}</span>
+                {% if org_group.is_new %}
+                  <span class="td-badge td-badge-new td-badge-new-org"
+                        title="Newly tracked in the last {{ days }} days">New</span>
+                {% endif %}
                 {% if org_group.organization.parent %}
                   <span class="small" style="color: var(--td-text-muted);" title="{{ org_group.organization.lineage_display }}">
                     &bull; {{ org_group.organization.lineage_display }}
@@ -100,6 +104,9 @@
             <a href="{% url 'monitor:document_detail' snapshot.document.pk %}"
                class="td-card-row">
               <span>{{ snapshot.document.display_name }}</span>
+              {% if snapshot.is_new %}
+                <span class="td-badge td-badge-new">New</span>
+              {% endif %}
               {% if snapshot.document.document_type == "tos" %}
                 <span class="td-badge td-badge-tos">Terms of Service</span>
               {% elif snapshot.document.document_type == "privacy" %}

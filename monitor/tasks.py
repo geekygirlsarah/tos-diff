@@ -172,11 +172,56 @@ def send_change_notifications(document_id: int, new_snapshot_id: int) -> dict:
 # Digest emails
 # ---------------------------------------------------------------------------
 
+NEW_DOCUMENTS_HEADING = "New documents we're now tracking"
+CHANGED_DOCUMENTS_HEADING = "Documents that changed"
+
+
+def _digest_section(
+    heading: str, notifications: list[PendingNotification]
+) -> tuple[list[str], str]:
+    """Render one digest section as (plain-text lines, HTML block)."""
+    plain_lines = [f"{heading} ({len(notifications)}):", ""]
+    html_items: list[str] = []
+    for notification in notifications:
+        doc = notification.document
+        detail_url = notification.detail_url
+        captured = notification.snapshot.captured_at
+        plain_lines.append(
+            f"- {doc.organization.name} — {doc.display_name} "
+            f"(captured {captured:%Y-%m-%d %H:%M UTC}): {detail_url}"
+        )
+        plain_lines.append(f"  Unsubscribe: {notification.unsubscribe_url}")
+        html_items.append(
+            f"<li><strong>{doc.organization.name}</strong> — {doc.display_name} "
+            f"({captured:%Y-%m-%d %H:%M UTC}) — "
+            f'<a href="{detail_url}">view document</a> — '
+            f'<a href="{notification.unsubscribe_url}">unsubscribe</a></li>'
+        )
+    html_block = (
+        f'<h2 style="font-size:16px;margin:16px 0 8px;">{heading} ({len(notifications)}):</h2>'
+        f"<ul>{''.join(html_items)}</ul>"
+    )
+    return plain_lines, html_block
+
+
+def _digest_subject(digest_label: str, new_count: int, changed_count: int) -> str:
+    """Build a subject line that names whichever sections the digest actually contains."""
+    parts = []
+    if new_count:
+        parts.append(f"{new_count} new document{'s' if new_count != 1 else ''}")
+    if changed_count:
+        parts.append(f"{changed_count} document change{'s' if changed_count != 1 else ''}")
+    summary = ", ".join(parts) if parts else "no updates"
+    return f"[TosDiff] {digest_label} digest — {summary}"
+
 
 def _send_digest(frequency: str, digest_label: str) -> dict:
     """
     Email one digest to each user whose preference is *frequency* with any
     pending notifications, then clear their queue.
+
+    Newly tracked documents (those whose queued snapshot is the document's
+    first) are listed in their own section, separate from documents that changed.
 
     Users without a ``NotificationPreference`` row are treated as daily.
     """
@@ -195,6 +240,15 @@ def _send_digest(frequency: str, digest_label: str) -> dict:
         if not pending:
             continue
 
+        for notification in pending:
+            notification.detail_url = base + reverse(
+                "monitor:document_detail", args=[notification.document.pk]
+            )
+            notification.unsubscribe_url = base + reverse(
+                "monitor:unsubscribe_token",
+                args=[make_unsubscribe_token(user.pk, notification.document.pk)],
+            )
+
         pending.sort(
             key=lambda n: (
                 n.document.organization.name.lower(),
@@ -202,41 +256,33 @@ def _send_digest(frequency: str, digest_label: str) -> dict:
             )
         )
 
-        plain_lines = [
-            "Here's a summary of documents that changed:",
-            "",
-        ]
-        html_items: list[str] = []
-        for notification in pending:
-            doc = notification.document
-            detail_url = base + reverse("monitor:document_detail", args=[doc.pk])
-            unsubscribe_url = base + reverse(
-                "monitor:unsubscribe_token",
-                args=[make_unsubscribe_token(user.pk, doc.pk)],
-            )
-            captured = notification.snapshot.captured_at
-            plain_lines.append(
-                f"- {doc.organization.name} — {doc.display_name} "
-                f"(captured {captured:%Y-%m-%d %H:%M UTC}): {detail_url}"
-            )
-            plain_lines.append(f"  Unsubscribe: {unsubscribe_url}")
-            html_items.append(
-                f"<li><strong>{doc.organization.name}</strong> — {doc.display_name} "
-                f"({captured:%Y-%m-%d %H:%M UTC}) — "
-                f'<a href="{detail_url}">view document</a> — '
-                f'<a href="{unsubscribe_url}">unsubscribe</a></li>'
-            )
+        # A notification with no old_snapshot is the document's first snapshot,
+        # i.e. a document we have only just started tracking.
+        new_notifications = [n for n in pending if n.old_snapshot_id is None]
+        changed_notifications = [n for n in pending if n.old_snapshot_id is not None]
+
+        plain_lines = ["Here's your TosDiff update:", ""]
+        html_sections: list[str] = []
+        for heading, group in (
+            (NEW_DOCUMENTS_HEADING, new_notifications),
+            (CHANGED_DOCUMENTS_HEADING, changed_notifications),
+        ):
+            if not group:
+                continue
+            lines, html_block = _digest_section(heading, group)
+            plain_lines += lines + [""]
+            html_sections.append(html_block)
+
         plain_lines += [
-            "",
             "You're receiving this because you subscribed to updates. "
             "Manage your subscriptions in your TosDiff account.",
         ]
 
-        subject = f"[TosDiff] {digest_label} digest — {len(pending)} document change(s)"
+        subject = _digest_subject(digest_label, len(new_notifications), len(changed_notifications))
         html_body = (
             "<html><body>"
-            f"<p>Here's a summary of documents that changed:</p>"
-            f"<ul>{''.join(html_items)}</ul>"
+            f"<p>Here's your TosDiff update:</p>"
+            f"{''.join(html_sections)}"
             '<p style="color:#64748b;font-size:12px;">'
             "You're receiving this because you subscribed to updates. "
             "Manage your subscriptions in your TosDiff account.</p>"
