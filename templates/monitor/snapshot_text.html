@@ -23,8 +23,12 @@
 <nav aria-label="breadcrumb" class="mb-3">
   <ol class="breadcrumb">
     <li class="breadcrumb-item"><a href="{% url 'monitor:home' %}">Recent Changes</a></li>
+    <li class="breadcrumb-item"><a href="{% url 'monitor:organizations' %}">Organizations</a></li>
+    {% for ancestor in snapshot.document.organization.get_ancestors %}
+      <li class="breadcrumb-item text-muted">{{ ancestor.name }}</li>
+    {% endfor %}
     <li class="breadcrumb-item">
-      <a href="{% url 'monitor:document_detail' snapshot.document.pk %}">{{ snapshot.document }}</a>
+      <a href="{% url 'monitor:document_detail' snapshot.document.pk %}">{{ snapshot.document.display_name }}</a>
     </li>
     <li class="breadcrumb-item active" aria-current="page">
       Snapshot {{ snapshot.captured_at|date:"Y-m-d H:i" }} UTC
@@ -36,7 +40,14 @@
   <div>
     <h1 class="h3 mb-1">Full snapshot text</h1>
     <p class="mb-0" style="color: var(--td-text-muted);">
-      {{ snapshot.document }} &mdash;
+      <a href="{{ snapshot.document.organization.website_url }}" target="_blank" rel="noopener noreferrer"
+         style="color: var(--td-primary);">
+        {{ snapshot.document.organization.name }}
+      </a>
+      {% if snapshot.document.organization.parent %}
+        <span class="small">&mdash; owned by <em>{{ snapshot.document.organization.lineage_display }}</em></span>
+      {% endif %}
+      &mdash; {{ snapshot.document.display_name }} &mdash;
       <time datetime="{{ snapshot.captured_at|date:'c' }}">
         {{ snapshot.captured_at|date:"Y-m-d H:i" }} UTC
       </time>

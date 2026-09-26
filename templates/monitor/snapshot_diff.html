@@ -27,8 +27,12 @@
 <nav aria-label="breadcrumb" class="mb-3">
   <ol class="breadcrumb">
     <li class="breadcrumb-item"><a href="{% url 'monitor:home' %}">Recent Changes</a></li>
+    <li class="breadcrumb-item"><a href="{% url 'monitor:organizations' %}">Organizations</a></li>
+    {% for ancestor in document.organization.get_ancestors %}
+      <li class="breadcrumb-item text-muted">{{ ancestor.name }}</li>
+    {% endfor %}
     <li class="breadcrumb-item">
-      <a href="{% url 'monitor:document_detail' document.pk %}">{{ document }}</a>
+      <a href="{% url 'monitor:document_detail' document.pk %}">{{ document.display_name }}</a>
     </li>
     <li class="breadcrumb-item active" aria-current="page">Diff</li>
   </ol>
@@ -36,7 +40,16 @@
 
 <div class="mb-4">
   <h1 class="h3 mb-1">Side-by-side diff</h1>
-  <p class="mb-0" style="color: var(--td-text-muted);">{{ document }}</p>
+  <p class="mb-0" style="color: var(--td-text-muted);">
+    <a href="{{ document.organization.website_url }}" target="_blank" rel="noopener noreferrer"
+       style="color: var(--td-primary);">
+      {{ document.organization.name }}
+    </a>
+    {% if document.organization.parent %}
+      <span class="small">&mdash; owned by <em>{{ document.organization.lineage_display }}</em></span>
+    {% endif %}
+    &mdash; {{ document.display_name }}
+  </p>
 </div>
 
 <div class="row g-3 mb-3">

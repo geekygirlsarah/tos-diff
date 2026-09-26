@@ -11,7 +11,7 @@ from django.contrib.auth import get_user_model, login
 from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.contrib.auth.views import LogoutView  # noqa: F401 – re-exported for urls
 from django.core import signing
-from django.db.models import Count, Exists, OuterRef, Q
+from django.db.models import Count, Exists, OuterRef, Prefetch, Q
 from django.db.models.deletion import ProtectedError
 from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
@@ -66,15 +66,25 @@ DEFAULT_DAYS = 7
 
 
 def _tracked_organizations():
-    """Top-level organizations with at least one document (directly or via a subsidiary)."""
-    return (
-        Organization.objects.filter(parent__isnull=True)
-        .annotate(
-            own_doc_count=Count("documents", distinct=True),
-            sub_doc_count=Count("subsidiaries__documents", distinct=True),
-        )
-        .filter(Q(own_doc_count__gt=0) | Q(sub_doc_count__gt=0))
-    )
+    """Top-level organizations with at least one document (directly or via any descendant)."""
+    doc_org_ids = set(Document.objects.values_list("organization_id", flat=True).distinct())
+    if not doc_org_ids:
+        return Organization.objects.none()
+
+    parent_map = dict(Organization.objects.values_list("id", "parent_id"))
+    root_ids: set[int] = set()
+    for org_id in doc_org_ids:
+        curr: int | None = org_id
+        visited: set[int] = set()
+        while curr is not None and curr not in visited:
+            visited.add(curr)
+            parent = parent_map.get(curr)
+            if parent is None:
+                root_ids.add(curr)
+                break
+            curr = parent
+
+    return Organization.objects.filter(id__in=root_ids)
 
 
 class RecentChangesView(ListView):
@@ -97,7 +107,7 @@ class RecentChangesView(ListView):
         days = self._get_days()
         cutoff = timezone.now() - timezone.timedelta(days=days)
         return DocumentSnapshot.objects.filter(captured_at__gte=cutoff).select_related(
-            "document__organization"
+            "document__organization__parent"
         )
 
     def get_queryset(self):
@@ -157,7 +167,7 @@ class DocumentDetailView(DetailView):
     context_object_name = "document"
 
     def get_queryset(self):
-        return Document.objects.select_related("organization")
+        return Document.objects.select_related("organization__parent")
 
     def get_context_data(self, **kwargs) -> dict:
         context = super().get_context_data(**kwargs)
@@ -187,7 +197,7 @@ class SnapshotDiffView(DetailView):
     context_object_name = "document"
 
     def get_queryset(self):
-        return Document.objects.select_related("organization")
+        return Document.objects.select_related("organization__parent")
 
     def get_context_data(self, **kwargs) -> dict:
         context = super().get_context_data(**kwargs)
@@ -218,21 +228,55 @@ class SnapshotDiffView(DetailView):
 
 
 class OrganizationsView(ListView):
-    """Lists all organizations with their documents."""
+    """Lists all organizations with their documents organized in hierarchy trees."""
 
     template_name = "monitor/organizations.html"
     context_object_name = "organizations"
 
     def get_queryset(self):
-        return (
-            _tracked_organizations()
+        all_orgs = list(
+            Organization.objects.all()
             .prefetch_related(
-                "documents",
-                "subsidiaries",
-                "subsidiaries__documents",
+                Prefetch(
+                    "documents",
+                    queryset=Document.objects.select_related("language", "country"),
+                ),
+                "tags",
             )
+            .select_related("parent")
             .order_by("name")
         )
+
+        children_by_parent: dict[int | None, list[Organization]] = {}
+        for org in all_orgs:
+            children_by_parent.setdefault(org.parent_id, []).append(org)
+
+        def build_node(org: Organization) -> int:
+            """Recursively attach nested_subsidiaries and compute document counts."""
+            own_docs = list(org.documents.all())
+            own_count = len(own_docs)
+            subsidiaries = []
+            sub_count = 0
+
+            for child in children_by_parent.get(org.pk, []):
+                child_total = build_node(child)
+                if child_total > 0:
+                    subsidiaries.append(child)
+                    sub_count += child_total
+
+            org.nested_subsidiaries = subsidiaries  # type: ignore[attr-defined]
+            org.own_doc_count = own_count  # type: ignore[attr-defined]
+            org.sub_doc_count = sub_count  # type: ignore[attr-defined]
+            org.total_doc_count = own_count + sub_count  # type: ignore[attr-defined]
+            return org.total_doc_count
+
+        roots = []
+        for root in children_by_parent.get(None, []):
+            total = build_node(root)
+            if total > 0:
+                roots.append(root)
+
+        return roots
 
     def get_context_data(self, **kwargs) -> dict:
         context = super().get_context_data(**kwargs)
@@ -295,7 +339,7 @@ class SnapshotTextView(DetailView):
     pk_url_kwarg = "snap_pk"
 
     def get_queryset(self):
-        return DocumentSnapshot.objects.select_related("document__organization")
+        return DocumentSnapshot.objects.select_related("document__organization__parent")
 
     def get_object(self, queryset=None):
         obj = super().get_object(queryset)
@@ -465,12 +509,12 @@ class AccountView(LoginRequiredMixin, TemplateView):
         context["notification_preference_form"] = NotificationPreferenceForm(instance=preference)
         context["document_subscriptions"] = (
             DocumentSubscription.objects.filter(user=user)
-            .select_related("document__organization")
+            .select_related("document__organization__parent")
             .order_by("document__organization__name", "document__document_type")
         )
         context["organization_subscriptions"] = (
             OrganizationSubscription.objects.filter(user=user)
-            .select_related("organization")
+            .select_related("organization__parent")
             .order_by("organization__name")
         )
         context["my_suggestions"] = user.suggestions.order_by("-submitted_at", "-pk")[:10]
@@ -636,9 +680,9 @@ class ManageDocumentListView(SuperuserRequiredMixin, ListView):
     paginate_by = 50
 
     def get_queryset(self):
-        qs = Document.objects.select_related("organization", "language", "country").order_by(
-            "organization__name", "document_type", "url"
-        )
+        qs = Document.objects.select_related(
+            "organization__parent", "language", "country"
+        ).order_by("organization__name", "document_type", "url")
         organization_id = self.request.GET.get("organization")
         document_type = self.request.GET.get("type")
         if organization_id:
@@ -889,17 +933,17 @@ class ManageAttentionView(SuperuserRequiredMixin, TemplateView):
         )
         context["failing_documents"] = list(
             Document.objects.filter(is_failing=True)
-            .select_related("organization")
+            .select_related("organization__parent")
             .order_by("organization__name", "document_type")
         )
         context["never_checked_documents"] = list(
             Document.objects.filter(last_checked__isnull=True)
-            .select_related("organization")
+            .select_related("organization__parent")
             .order_by("organization__name", "document_type")
         )
         context["no_snapshot_documents"] = list(
             Document.objects.filter(snapshots__isnull=True)
-            .select_related("organization")
+            .select_related("organization__parent")
             .order_by("organization__name", "document_type")
         )
         return context

@@ -53,7 +53,12 @@
       <tbody>
         {% for doc in documents %}
         <tr>
-          <td class="small">{{ doc.organization.name }}</td>
+          <td class="small">
+            {{ doc.organization.name }}
+            {% if doc.organization.parent %}
+              <div class="small" style="color: var(--td-text-muted);">via {{ doc.organization.lineage_display }}</div>
+            {% endif %}
+          </td>
           <td>
             <a href="{% url 'monitor:manage_document_update' doc.pk %}" class="text-decoration-none"
                style="color: var(--td-primary-dark);">{{ doc.display_name }}</a>

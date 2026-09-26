@@ -84,6 +84,11 @@
                      onerror="this.style.display='none'">
                 {% endif %}
                 <span class="fw-semibold">{{ org_group.organization.name }}</span>
+                {% if org_group.organization.parent %}
+                  <span class="small" style="color: var(--td-text-muted);" title="{{ org_group.organization.lineage_display }}">
+                    &bull; {{ org_group.organization.lineage_display }}
+                  </span>
+                {% endif %}
                 {% if org_group.organization.is_failing %}
                   <span class="td-badge td-badge-error">Error</span>
                 {% endif %}

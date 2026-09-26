@@ -48,6 +48,11 @@
                    class="text-decoration-none fw-semibold" style="color: var(--td-primary);">
                   {{ sub.document.organization.name }}
                 </a>
+                {% if sub.document.organization.parent %}
+                  <div class="small" style="color: var(--td-text-muted);">
+                    {{ sub.document.organization.lineage_display }}
+                  </div>
+                {% endif %}
               </td>
               <td style="color: var(--td-text-muted);">{{ sub.document.display_name }}</td>
               <td class="text-end">
@@ -100,7 +105,14 @@
           <tbody>
             {% for sub in organization_subscriptions %}
             <tr>
-              <td class="fw-semibold">{{ sub.organization.name }}</td>
+              <td>
+                <span class="fw-semibold">{{ sub.organization.name }}</span>
+                {% if sub.organization.parent %}
+                  <div class="small" style="color: var(--td-text-muted);">
+                    Subsidiary of {{ sub.organization.lineage_display }}
+                  </div>
+                {% endif %}
+              </td>
               <td class="text-end">
                 <form method="post"
                       action="{% url 'monitor:organization_unsubscribe' sub.organization.pk %}">

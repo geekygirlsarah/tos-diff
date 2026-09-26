@@ -14,7 +14,7 @@ Organizations have no `organization` FK; Documents do.
     {% for item in items %}
     {% if item.organization %}
     <a href="{% url 'monitor:manage_document_update' item.pk %}" class="td-card-row">
-      <span>{{ item.organization.name }} — {{ item.display_name }}</span>
+      <span>{{ item.organization.name }}{% if item.organization.parent %} <small style="color: var(--td-text-muted);">({{ item.organization.lineage_display }})</small>{% endif %} — {{ item.display_name }}</span>
       <span class="small" style="color: var(--td-text-muted);">{{ item.url }}</span>
       {% if item.is_failing %}<span class="td-badge td-badge-error">Failing</span>{% endif %}
       {% if not item.last_checked %}<span class="td-badge" style="background: #fef3c7; color: #92400e;">Never checked</span>{% endif %}
@@ -22,7 +22,7 @@ Organizations have no `organization` FK; Documents do.
     </a>
     {% else %}
     <a href="{% url 'monitor:manage_organization_update' item.pk %}" class="td-card-row">
-      <span>{{ item.name }}</span>
+      <span>{{ item.name }}{% if item.parent %} <small style="color: var(--td-text-muted);">({{ item.lineage_display }})</small>{% endif %}</span>
       <span class="td-badge td-badge-other">{{ item.get_category_display|default:"Other" }}</span>
       <span class="td-badge td-badge-error">Failing</span>
     </a>

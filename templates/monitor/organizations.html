@@ -99,52 +99,13 @@
           {% endif %}
         </a>
         {% endfor %}
-        {% else %}
+        {% elif not org.nested_subsidiaries %}
         <p class="px-4 py-3 mb-0" style="color: var(--td-text-muted);">No documents tracked yet.</p>
         {% endif %}
 
-        {% for subsidiary in org.subsidiaries.all %}{% if subsidiary.documents.all %}
-        <div style="background: var(--td-surface);">
-          <div class="px-4 pt-3 pb-1">
-            <h3 class="h6 mb-2" style="color: var(--td-text-muted);">
-              {% if subsidiary.favicon_url %}
-              <img src="{{ subsidiary.favicon_url }}" alt=""
-                   class="td-favicon me-1" width="14" height="14" loading="lazy"
-                   referrerpolicy="no-referrer"
-                   onerror="this.style.display='none'">
-              {% endif %}
-              <a href="{{ subsidiary.website_url }}" target="_blank" rel="noopener noreferrer"
-                 class="text-decoration-none" style="color: var(--td-text-muted);">{{ subsidiary.name }}</a>
-              <small class="fw-normal">(subsidiary)</small>
-            </h3>
-          </div>
-          {% for doc in subsidiary.documents.all %}
-          <a href="{% url 'monitor:document_detail' doc.pk %}" class="td-card-row ps-5">
-            <span>{{ doc.display_name }}</span>
-            {% if doc.document_type == "tos" %}
-              <span class="td-badge td-badge-tos">ToS</span>
-            {% elif doc.document_type == "privacy" %}
-              <span class="td-badge td-badge-privacy">Privacy</span>
-            {% elif doc.document_type == "cookie" %}
-              <span class="td-badge td-badge-cookie">Cookie</span>
-            {% elif doc.document_type == "other" %}
-              <span class="td-badge td-badge-other">{{ doc.other_document_type|default:"Other" }}</span>
-            {% else %}
-              <span class="td-badge td-badge-other">{{ doc.get_document_type_display }}</span>
-            {% endif %}
-            {% if doc.is_failing %}
-              <span class="td-badge td-badge-error">Error</span>
-            {% endif %}
-            {% if doc.language %}
-              <span class="td-badge" style="background: var(--td-surface); color: var(--td-text-muted);">{{ doc.language.name }}</span>
-            {% endif %}
-            {% if doc.country %}
-              <span class="td-badge" style="background: var(--td-surface); color: var(--td-text-muted);">{{ doc.country.name }}</span>
-            {% endif %}
-          </a>
-          {% endfor %}
-        </div>
-        {% endif %}{% endfor %}
+        {% for subsidiary in org.nested_subsidiaries %}
+          {% include "monitor/_subsidiary_node.html" with subsidiary=subsidiary depth=1 %}
+        {% endfor %}
       </div>
     </article>
     {% endfor %}

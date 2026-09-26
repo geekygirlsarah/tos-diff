@@ -108,6 +108,50 @@ class Organization(models.Model):
             return ""
         return f"https://icons.duckduckgo.com/ip3/{hostname}.ico"
 
+    def get_ancestors(self) -> list["Organization"]:
+        """
+        Return the list of parent organizations from top-level root down to immediate parent.
+        Example: [Sony Group Corporation, Sony Interactive Entertainment] for PlayStation.
+        Includes cycle protection.
+        """
+        ancestors: list[Organization] = []
+        curr = self.parent
+        visited = {self.pk} if self.pk else set()
+        while curr is not None and curr.pk not in visited:
+            ancestors.append(curr)
+            if curr.pk:
+                visited.add(curr.pk)
+            curr = curr.parent
+        ancestors.reverse()
+        return ancestors
+
+    @property
+    def root_organization(self) -> "Organization":
+        """Return the ultimate top-level parent organization."""
+        ancestors = self.get_ancestors()
+        return ancestors[0] if ancestors else self
+
+    @property
+    def lineage_display(self) -> str:
+        """
+        Formatted string of the ownership path.
+        Example: 'Sony Group Corporation → Sony Interactive Entertainment'
+        """
+        ancestors = self.get_ancestors()
+        if not ancestors:
+            return ""
+        return " → ".join(a.name for a in ancestors)
+
+    @property
+    def full_hierarchy_display(self) -> str:
+        """
+        Full path including this organization.
+        Example: 'Sony Group Corporation → Sony Interactive Entertainment → PlayStation'
+        """
+        ancestors = self.get_ancestors()
+        names = [a.name for a in ancestors] + [self.name]
+        return " → ".join(names)
+
 
 class Document(models.Model):
     class DocumentType(models.TextChoices):
@@ -222,6 +266,11 @@ class Document(models.Model):
         if self.document_type == self.DocumentType.OTHER and self.other_document_type:
             return self.other_document_type
         return self.get_document_type_display()
+
+    @property
+    def organization_lineage(self) -> list[Organization]:
+        """Convenience helper to get the organization's ancestor path."""
+        return self.organization.get_ancestors()
 
     def __str__(self) -> str:
         return f"{self.organization.name} — {self.display_name}"

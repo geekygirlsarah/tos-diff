@@ -4131,3 +4131,181 @@ class AdminErrorEmailRoutingTest(TestCase):
         self.assertTrue(email_handlers, "django logger has no AdminEmailHandler")
         for handler in email_handlers:
             self.assertEqual(handler.using, "admin")
+
+
+class MultiLevelCorporateHierarchyTest(TestCase):
+    """Tests for multi-level corporate hierarchy models, lineage, and templates."""
+
+    def setUp(self):
+        self.root_org = Organization.objects.create(
+            name="Sony Group Corporation",
+            website_url="https://sony.com",
+            category=Organization.Category.TECHNOLOGY,
+        )
+        self.mid_org = Organization.objects.create(
+            name="Sony Interactive Entertainment",
+            website_url="https://sie.com",
+            parent=self.root_org,
+            category=Organization.Category.ENTERTAINMENT_STREAMING,
+        )
+        self.leaf_org = Organization.objects.create(
+            name="PlayStation",
+            website_url="https://playstation.com",
+            parent=self.mid_org,
+            category=Organization.Category.ENTERTAINMENT_STREAMING,
+        )
+        self.leaf_doc = Document.objects.create(
+            organization=self.leaf_org,
+            name="PlayStation Network Terms of Service",
+            document_type=Document.DocumentType.TERMS_OF_SERVICE,
+            url="https://playstation.com/tos",
+        )
+
+    def test_get_ancestors_no_parent(self):
+        self.assertEqual(self.root_org.get_ancestors(), [])
+
+    def test_get_ancestors_single_parent(self):
+        self.assertEqual(self.mid_org.get_ancestors(), [self.root_org])
+
+    def test_get_ancestors_multi_level(self):
+        self.assertEqual(self.leaf_org.get_ancestors(), [self.root_org, self.mid_org])
+
+    def test_get_ancestors_cycle_protection(self):
+        org_a = Organization.objects.create(name="OrgA", website_url="https://a.com")
+        org_b = Organization.objects.create(name="OrgB", website_url="https://b.com", parent=org_a)
+        org_a.parent = org_b
+        org_a.save()
+        ancestors = org_a.get_ancestors()
+        self.assertEqual(ancestors, [org_b])
+
+    def test_root_organization(self):
+        self.assertEqual(self.root_org.root_organization, self.root_org)
+        self.assertEqual(self.mid_org.root_organization, self.root_org)
+        self.assertEqual(self.leaf_org.root_organization, self.root_org)
+
+    def test_lineage_display(self):
+        self.assertEqual(self.root_org.lineage_display, "")
+        self.assertEqual(self.mid_org.lineage_display, "Sony Group Corporation")
+        self.assertEqual(
+            self.leaf_org.lineage_display,
+            "Sony Group Corporation → Sony Interactive Entertainment",
+        )
+
+    def test_full_hierarchy_display(self):
+        self.assertEqual(self.root_org.full_hierarchy_display, "Sony Group Corporation")
+        self.assertEqual(
+            self.leaf_org.full_hierarchy_display,
+            "Sony Group Corporation → Sony Interactive Entertainment → PlayStation",
+        )
+
+    def test_document_organization_lineage(self):
+        self.assertEqual(
+            self.leaf_doc.organization_lineage,
+            [self.root_org, self.mid_org],
+        )
+
+    def test_organizations_view_multi_level_tree(self):
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["total_organizations"], 1)
+        self.assertContains(response, "Sony Group Corporation")
+        self.assertContains(response, "Sony Interactive Entertainment")
+        self.assertContains(response, "PlayStation")
+        self.assertContains(response, "PlayStation Network Terms of Service")
+        self.assertContains(response, "1 document")
+
+    def test_organizations_view_hides_empty_subsidiary_branch(self):
+        Organization.objects.create(
+            name="Sony Music Entertainment",
+            website_url="https://sonymusic.com",
+            parent=self.root_org,
+        )
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertContains(response, "Sony Group Corporation")
+        self.assertContains(response, "PlayStation")
+        self.assertNotContains(response, "Sony Music Entertainment")
+
+    def test_document_detail_breadcrumbs_and_lineage(self):
+        response = self.client.get(reverse("monitor:document_detail", args=[self.leaf_doc.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Sony Group Corporation")
+        self.assertContains(response, "Sony Interactive Entertainment")
+        self.assertContains(response, "PlayStation")
+        self.assertContains(
+            response,
+            "Sony Group Corporation → Sony Interactive Entertainment",
+        )
+
+    def test_snapshot_diff_breadcrumbs_and_lineage(self):
+        snap1 = DocumentSnapshot.objects.create(
+            document=self.leaf_doc,
+            cleaned_text="Version 1",
+            text_hash=compute_hash("Version 1"),
+        )
+        snap2 = DocumentSnapshot.objects.create(
+            document=self.leaf_doc,
+            cleaned_text="Version 2",
+            text_hash=compute_hash("Version 2"),
+        )
+        response = self.client.get(
+            reverse("monitor:snapshot_diff", args=[self.leaf_doc.pk, snap1.pk, snap2.pk])
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Sony Group Corporation")
+        self.assertContains(response, "Sony Interactive Entertainment")
+        self.assertContains(
+            response,
+            "Sony Group Corporation → Sony Interactive Entertainment",
+        )
+
+    def test_snapshot_text_breadcrumbs_and_lineage(self):
+        snap1 = DocumentSnapshot.objects.create(
+            document=self.leaf_doc,
+            cleaned_text="Version 1",
+            text_hash=compute_hash("Version 1"),
+        )
+        response = self.client.get(
+            reverse("monitor:snapshot_text", args=[self.leaf_doc.pk, snap1.pk])
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Sony Group Corporation")
+        self.assertContains(response, "Sony Interactive Entertainment")
+        self.assertContains(
+            response,
+            "Sony Group Corporation → Sony Interactive Entertainment",
+        )
+
+    def test_homepage_feed_shows_lineage_for_subsidiary(self):
+        DocumentSnapshot.objects.create(
+            document=self.leaf_doc,
+            cleaned_text="Version 1",
+            text_hash=compute_hash("Version 1"),
+            captured_at=timezone.now(),
+        )
+        response = self.client.get(reverse("monitor:home"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "PlayStation")
+        self.assertContains(
+            response,
+            "Sony Group Corporation → Sony Interactive Entertainment",
+        )
+
+    def test_manage_organizations_shows_lineage(self):
+        user = get_user_model().objects.create_superuser("admin", "admin@example.com", "pass")
+        self.client.force_login(user)
+        response = self.client.get(reverse("monitor:manage_organizations"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            "child of Sony Group Corporation → Sony Interactive Entertainment",
+        )
+
+    def test_manage_documents_shows_lineage(self):
+        user = get_user_model().objects.create_superuser("admin", "admin@example.com", "pass")
+        self.client.force_login(user)
+        response = self.client.get(reverse("monitor:manage_documents"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            "via Sony Group Corporation → Sony Interactive Entertainment",
+        )

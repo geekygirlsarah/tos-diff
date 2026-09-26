@@ -6,7 +6,12 @@
 <nav aria-label="breadcrumb" class="mb-3">
   <ol class="breadcrumb">
     <li class="breadcrumb-item"><a href="{% url 'monitor:home' %}">Recent Changes</a></li>
-    <li class="breadcrumb-item active" aria-current="page">{{ document }}</li>
+    <li class="breadcrumb-item"><a href="{% url 'monitor:organizations' %}">Organizations</a></li>
+    {% for ancestor in document.organization.get_ancestors %}
+      <li class="breadcrumb-item text-muted">{{ ancestor.name }}</li>
+    {% endfor %}
+    <li class="breadcrumb-item"><a href="{{ document.organization.website_url }}" target="_blank" rel="noopener noreferrer">{{ document.organization.name }}</a></li>
+    <li class="breadcrumb-item active" aria-current="page">{{ document.display_name }}</li>
   </ol>
 </nav>
 
@@ -18,6 +23,9 @@
          style="color: var(--td-primary);">
         {{ document.organization.name }}
       </a>
+      {% if document.organization.parent %}
+        <span class="small">&mdash; owned by <em>{{ document.organization.lineage_display }}</em></span>
+      {% endif %}
       &mdash; {{ document.display_name }}
       {% if document.is_failing or document.organization.is_failing %}
       <span class="td-badge td-badge-error ms-2" title="Retrieval failing">Error: Retrieval Disabled</span>

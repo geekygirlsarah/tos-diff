@@ -34,7 +34,7 @@
             <a href="{% url 'monitor:manage_organization_update' org.pk %}" class="fw-semibold text-decoration-none"
                style="color: var(--td-primary-dark);">{{ org.name }}</a>
             {% if org.parent %}
-              <span class="small" style="color: var(--td-text-muted);">(child of {{ org.parent.name }})</span>
+              <span class="small" style="color: var(--td-text-muted);">(child of {{ org.lineage_display }})</span>
             {% endif %}
           </td>
           <td>
