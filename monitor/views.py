@@ -11,7 +11,7 @@ from django.contrib.auth import get_user_model, login
 from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.contrib.auth.views import LogoutView  # noqa: F401 – re-exported for urls
 from django.core import signing
-from django.db.models import Count, Exists, OuterRef, Prefetch, Q
+from django.db.models import Count, Exists, F, OuterRef, Prefetch, Q
 from django.db.models.deletion import ProtectedError
 from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
@@ -140,6 +140,33 @@ def _flag_new_organizations(orgs: list[Organization], days: int) -> None:
 
     for org in orgs:
         apply(org)
+
+
+def _duplicate_snapshot_ids(document_id: int | None = None) -> list[int]:
+    """Return the ids of snapshots that merely repeat an earlier capture of the same document.
+
+    A snapshot counts as a duplicate when another snapshot of the *same* document shares its
+    ``text_hash`` (an identical body captured again on a later run — typically a bot-block or
+    error interstitial that slipped past the fetcher). The oldest capture of every group is kept
+    so the baseline and the real change history survive; only the redundant re-captures are
+    returned. Pass *document_id* to limit the cleanup to a single document.
+    """
+    snapshots = DocumentSnapshot.objects.all()
+    if document_id is not None:
+        snapshots = snapshots.filter(document_id=document_id)
+
+    seen: set[tuple[int, str]] = set()
+    duplicate_ids: list[int] = []
+    rows = snapshots.order_by("document_id", "text_hash", "captured_at", "pk").values_list(
+        "pk", "document_id", "text_hash"
+    )
+    for pk, doc_id, text_hash in rows:
+        group = (doc_id, text_hash)
+        if group in seen:
+            duplicate_ids.append(pk)
+        else:
+            seen.add(group)
+    return duplicate_ids
 
 
 class RecentChangesView(ListView):
@@ -696,6 +723,8 @@ class ManageDashboardView(SuperuserRequiredMixin, TemplateView):
         context["approved_document_count"] = _tracked_organizations().count()
         context["country_count"] = Country.objects.count()
         context["language_count"] = Language.objects.count()
+        context["user_count"] = get_user_model().objects.count()
+        context["snapshot_count"] = DocumentSnapshot.objects.count()
         return context
 
 
@@ -1048,6 +1077,110 @@ class ManageUserListView(SuperuserRequiredMixin, ListView):
         context["page_title"] = "Users"
         context["query"] = self.request.GET.get("q", "").strip()
         return context
+
+
+class ManageSnapshotListView(SuperuserRequiredMixin, ListView):
+    """Browse stored snapshots, spot repeated captures, and delete the ones we don't want."""
+
+    model = DocumentSnapshot
+    template_name = "monitor/manage/snapshot_list.html"
+    context_object_name = "snapshots"
+    paginate_by = 50
+
+    @staticmethod
+    def _filter_param(request, key: str) -> str:
+        """Read a filter value, treating blanks and non-numeric junk as "not set"."""
+        value = (request.GET.get(key) or "").strip()
+        return value if value.isdigit() else ""
+
+    def get_queryset(self):
+        organization_id = self._filter_param(self.request, "organization")
+        document_id = self._filter_param(self.request, "document")
+        query = (self.request.GET.get("q") or "").strip()
+
+        qs = (
+            DocumentSnapshot.objects.select_related("document__organization")
+            .annotate(
+                copy_count=Count(
+                    "document__snapshots",
+                    filter=Q(document__snapshots__text_hash=F("text_hash")),
+                )
+            )
+            .order_by("-captured_at", "pk")
+        )
+        if organization_id:
+            qs = qs.filter(document__organization_id=organization_id)
+        if document_id:
+            qs = qs.filter(document_id=document_id)
+        if query:
+            qs = qs.filter(cleaned_text__icontains=query)
+        if self.request.GET.get("duplicates"):
+            qs = qs.filter(copy_count__gt=1)
+        return qs
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Snapshots"
+        context["query"] = (self.request.GET.get("q") or "").strip()
+        context["selected_organization"] = self._filter_param(self.request, "organization")
+        context["selected_document"] = self._filter_param(self.request, "document")
+        context["duplicates_only"] = bool(self.request.GET.get("duplicates"))
+        context["organizations"] = Organization.objects.order_by("name")
+        context["documents"] = Document.objects.order_by(
+            "organization__name", "name", "document_type"
+        )
+        if context["selected_organization"]:
+            context["documents"] = context["documents"].filter(
+                organization_id=context["selected_organization"]
+            )
+        context["snapshot_count"] = DocumentSnapshot.objects.count()
+        context["duplicate_count"] = len(_duplicate_snapshot_ids())
+        return context
+
+
+class ManageSnapshotDeleteView(SuperuserRequiredMixin, View):
+    """POST-only: delete the snapshots ticked in the snapshot manager."""
+
+    def post(self, request, *args, **kwargs) -> HttpResponse:
+        ids = [int(value) for value in request.POST.getlist("snapshot_ids") if value.isdigit()]
+        deleted = DocumentSnapshot.objects.filter(pk__in=ids).count()
+        DocumentSnapshot.objects.filter(pk__in=ids).delete()
+        if deleted:
+            noun = "snapshot" if deleted == 1 else "snapshots"
+            messages.success(request, f"Deleted {deleted} {noun}.")
+        else:
+            messages.warning(request, "No snapshots were selected.")
+
+        target = request.POST.get("next") or ""
+        if target and url_has_allowed_host_and_scheme(target, allowed_hosts=None):
+            return redirect(target)
+        return redirect("monitor:manage_snapshots")
+
+
+class ManageSnapshotPurgeDuplicatesView(SuperuserRequiredMixin, TemplateView):
+    """Confirm, then delete every repeated capture, keeping the oldest of each group."""
+
+    template_name = "monitor/manage/snapshot_purge.html"
+
+    def _document_id(self) -> int | None:
+        request = self.request
+        raw = (request.POST.get("document") or request.GET.get("document") or "").strip()
+        return int(raw) if raw.isdigit() else None
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Delete duplicate snapshots"
+        context["purge_count"] = len(_duplicate_snapshot_ids(self._document_id()))
+        return context
+
+    def post(self, request, *args, **kwargs) -> HttpResponse:
+        duplicate_ids = _duplicate_snapshot_ids(self._document_id())
+        DocumentSnapshot.objects.filter(pk__in=duplicate_ids).delete()
+        noun = "snapshot" if len(duplicate_ids) == 1 else "snapshots"
+        messages.success(
+            request, f"Deleted {len(duplicate_ids)} duplicate {noun}, keeping the first capture."
+        )
+        return redirect("monitor:manage_snapshots")
 
 
 class ManageDocumentCheckView(SuperuserRequiredMixin, View):

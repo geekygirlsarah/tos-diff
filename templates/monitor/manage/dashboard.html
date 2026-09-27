@@ -54,6 +54,20 @@
       <a class="btn btn-sm td-btn-outline mt-3" href="{% url 'monitor:manage_tags' %}">Manage</a>
     </div>
   </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="td-card p-4 text-center h-100">
+      <div class="h3 fw-bold mb-0" style="color: var(--td-primary-dark);">{{ user_count }}</div>
+      <div class="small" style="color: var(--td-text-muted);">User accounts</div>
+      <a class="btn btn-sm td-btn-outline mt-3" href="{% url 'monitor:manage_users' %}">Manage</a>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="td-card p-4 text-center h-100">
+      <div class="h3 fw-bold mb-0" style="color: var(--td-primary-dark);">{{ snapshot_count }}</div>
+      <div class="small" style="color: var(--td-text-muted);">Snapshots stored</div>
+      <a class="btn btn-sm td-btn-outline mt-3" href="{% url 'monitor:manage_snapshots' %}">Manage</a>
+    </div>
+  </div>
 </div>
 
 <div class="td-card mt-4">
@@ -68,6 +82,7 @@
     <a class="btn td-btn-outline" href="{% url 'monitor:manage_language_create' %}">Add a language</a>
     <a class="btn td-btn-outline" href="{% url 'monitor:manage_attention' %}">Needs attention</a>
     <a class="btn td-btn-outline" href="{% url 'monitor:manage_users' %}">Users</a>
+    <a class="btn td-btn-outline" href="{% url 'monitor:manage_snapshots' %}">Snapshots</a>
     <a class="btn td-btn-outline" href="/admin/">Open Django admin</a>
   </div>
 </div>

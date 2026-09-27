@@ -3336,11 +3336,14 @@ class ManageAccessControlTest(TestCase):
             reverse("monitor:manage_language_delete", args=[self.language.pk]),
             reverse("monitor:manage_attention"),
             reverse("monitor:manage_users"),
+            reverse("monitor:manage_snapshots"),
+            reverse("monitor:manage_snapshots_purge_duplicates"),
         ]
 
     def _manage_post_urls(self):
         return [
             reverse("monitor:manage_document_check", args=[self.doc.pk]),
+            reverse("monitor:manage_snapshots_delete"),
         ]
 
     def test_anonymous_users_redirected_to_login(self):
@@ -3932,6 +3935,276 @@ class ManageUserListViewTest(TestCase):
         user_row = next(u for u in response.context["users"] if u.username == "bob")
         self.assertEqual(user_row.document_subscription_count, 1)
         self.assertEqual(user_row.organization_subscription_count, 1)
+
+
+class ManageSnapshotListViewTest(TestCase):
+    """Admins can browse stored snapshots and spot duplicate captures."""
+
+    def setUp(self):
+        _login_as_superuser(self.client)
+        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.other_org = Organization.objects.create(
+            name="Globex", website_url="https://globex.com"
+        )
+        self.doc = Document.objects.create(organization=self.org, url="https://acme.com/tos")
+        self.other_doc = Document.objects.create(
+            organization=self.other_org, url="https://globex.com/privacy"
+        )
+        # Two identical error-page captures, one unique real capture, one on another document.
+        self.error_1 = DocumentSnapshot.objects.create(
+            document=self.doc, cleaned_text="Access Denied", text_hash="dup-hash"
+        )
+        self.error_2 = DocumentSnapshot.objects.create(
+            document=self.doc, cleaned_text="Access Denied", text_hash="dup-hash"
+        )
+        self.unique = DocumentSnapshot.objects.create(
+            document=self.doc, cleaned_text="Real terms", text_hash="unique-hash"
+        )
+        self.other = DocumentSnapshot.objects.create(
+            document=self.other_doc, cleaned_text="Access Denied", text_hash="dup-hash"
+        )
+        # captured_at is auto_now_add, so age them explicitly.
+        now = timezone.now()
+        DocumentSnapshot.objects.filter(pk=self.error_1.pk).update(
+            captured_at=now - timezone.timedelta(days=3)
+        )
+        DocumentSnapshot.objects.filter(pk=self.error_2.pk).update(
+            captured_at=now - timezone.timedelta(days=2)
+        )
+
+    def test_page_renders_all_snapshots(self):
+        response = self.client.get(reverse("monitor:manage_snapshots"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            sorted(s.pk for s in response.context["snapshots"]),
+            sorted([self.error_1.pk, self.error_2.pk, self.unique.pk, self.other.pk]),
+        )
+
+    def test_context_reports_totals(self):
+        response = self.client.get(reverse("monitor:manage_snapshots"))
+        self.assertEqual(response.context["snapshot_count"], 4)
+        self.assertEqual(response.context["duplicate_count"], 1)
+
+    def test_copy_count_counts_same_document_same_hash(self):
+        response = self.client.get(reverse("monitor:manage_snapshots"))
+        copies = {s.pk: s.copy_count for s in response.context["snapshots"]}
+        self.assertEqual(copies[self.error_1.pk], 2)
+        self.assertEqual(copies[self.error_2.pk], 2)
+        self.assertEqual(copies[self.unique.pk], 1)
+        self.assertEqual(copies[self.other.pk], 1)
+
+    def test_filter_by_organization(self):
+        response = self.client.get(
+            reverse("monitor:manage_snapshots"), {"organization": self.org.pk}
+        )
+        self.assertEqual(
+            sorted(s.pk for s in response.context["snapshots"]),
+            sorted([self.error_1.pk, self.error_2.pk, self.unique.pk]),
+        )
+        self.assertEqual(response.context["selected_organization"], str(self.org.pk))
+
+    def test_filter_by_document(self):
+        response = self.client.get(
+            reverse("monitor:manage_snapshots"), {"document": self.other_doc.pk}
+        )
+        self.assertEqual([s.pk for s in response.context["snapshots"]], [self.other.pk])
+        self.assertEqual(response.context["selected_document"], str(self.other_doc.pk))
+
+    def test_filter_by_text_search(self):
+        response = self.client.get(reverse("monitor:manage_snapshots"), {"q": "Real terms"})
+        self.assertEqual([s.pk for s in response.context["snapshots"]], [self.unique.pk])
+        self.assertEqual(response.context["query"], "Real terms")
+
+    def test_duplicates_filter_only_shows_repeated_captures(self):
+        response = self.client.get(reverse("monitor:manage_snapshots"), {"duplicates": "1"})
+        self.assertEqual(
+            sorted(s.pk for s in response.context["snapshots"]),
+            sorted([self.error_1.pk, self.error_2.pk]),
+        )
+        self.assertTrue(response.context["duplicates_only"])
+
+    def test_filters_combine(self):
+        response = self.client.get(
+            reverse("monitor:manage_snapshots"),
+            {"organization": self.org.pk, "duplicates": "1"},
+        )
+        self.assertEqual(
+            sorted(s.pk for s in response.context["snapshots"]),
+            sorted([self.error_1.pk, self.error_2.pk]),
+        )
+
+    def test_document_dropdown_is_scoped_to_selected_organization(self):
+        response = self.client.get(
+            reverse("monitor:manage_snapshots"), {"organization": self.org.pk}
+        )
+        self.assertEqual([d.pk for d in response.context["documents"]], [self.doc.pk])
+        response = self.client.get(reverse("monitor:manage_snapshots"))
+        self.assertCountEqual(
+            [d.pk for d in response.context["documents"]], [self.doc.pk, self.other_doc.pk]
+        )
+
+    def test_organization_dropdown_lists_tracked_organizations(self):
+        response = self.client.get(reverse("monitor:manage_snapshots"))
+        self.assertCountEqual(
+            [o.pk for o in response.context["organizations"]], [self.org.pk, self.other_org.pk]
+        )
+
+    def test_invalid_filters_are_ignored(self):
+        response = self.client.get(
+            reverse("monitor:manage_snapshots"),
+            {"organization": "not-a-pk", "document": "", "q": "  "},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["query"], "")
+        self.assertEqual(response.context["selected_organization"], "")
+        self.assertEqual(response.context["selected_document"], "")
+        self.assertEqual(len(response.context["snapshots"]), 4)
+
+    def test_dashboard_counts_users_and_snapshots(self):
+        response = self.client.get(reverse("monitor:manage_dashboard"))
+        self.assertEqual(response.context["user_count"], get_user_model().objects.count())
+        self.assertEqual(response.context["snapshot_count"], 4)
+
+    def test_dashboard_links_to_users_and_snapshots(self):
+        response = self.client.get(reverse("monitor:manage_dashboard"))
+        self.assertContains(response, reverse("monitor:manage_users"))
+        self.assertContains(response, reverse("monitor:manage_snapshots"))
+
+    def test_bulk_cleanup_links_to_the_confirmation_page(self):
+        response = self.client.get(reverse("monitor:manage_snapshots"))
+        self.assertContains(response, reverse("monitor:manage_snapshots_purge_duplicates"))
+
+    def test_bulk_cleanup_carries_the_selected_document(self):
+        url = reverse("monitor:manage_snapshots_purge_duplicates")
+        response = self.client.get(reverse("monitor:manage_snapshots"), {"document": self.doc.pk})
+        self.assertContains(response, f"{url}?document={self.doc.pk}")
+
+    def test_duplicate_rows_are_flagged(self):
+        response = self.client.get(reverse("monitor:manage_snapshots"), {"duplicates": "1"})
+        self.assertContains(response, "Access Denied")
+        self.assertContains(response, "&times;2")
+
+
+class ManageSnapshotDeleteViewTest(TestCase):
+    """Admins can delete chosen snapshots, and purge duplicate captures in bulk."""
+
+    def setUp(self):
+        self.superuser = _login_as_superuser(self.client)
+        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.doc = Document.objects.create(organization=self.org, url="https://acme.com/tos")
+        self.other_doc = Document.objects.create(
+            organization=self.org, url="https://acme.com/privacy"
+        )
+        self.error_1 = DocumentSnapshot.objects.create(
+            document=self.doc, cleaned_text="Access Denied", text_hash="dup-hash"
+        )
+        self.error_2 = DocumentSnapshot.objects.create(
+            document=self.doc, cleaned_text="Access Denied", text_hash="dup-hash"
+        )
+        self.error_3 = DocumentSnapshot.objects.create(
+            document=self.doc, cleaned_text="Access Denied", text_hash="dup-hash"
+        )
+        self.unique = DocumentSnapshot.objects.create(
+            document=self.doc, cleaned_text="Real terms", text_hash="unique-hash"
+        )
+        # Same hash on a different document is not a duplicate of the above.
+        self.other = DocumentSnapshot.objects.create(
+            document=self.other_doc, cleaned_text="Access Denied", text_hash="dup-hash"
+        )
+        now = timezone.now()
+        DocumentSnapshot.objects.filter(pk=self.error_1.pk).update(
+            captured_at=now - timezone.timedelta(days=5)
+        )
+        DocumentSnapshot.objects.filter(pk=self.error_2.pk).update(
+            captured_at=now - timezone.timedelta(days=3)
+        )
+
+    def _delete(self, follow=False, **payload):
+        return self.client.post(reverse("monitor:manage_snapshots_delete"), payload, follow=follow)
+
+    def test_delete_selected_snapshots(self):
+        response = self._delete(snapshot_ids=[self.error_2.pk, self.unique.pk])
+        self.assertEqual(response.status_code, 302)
+        self.assertRedirects(response, reverse("monitor:manage_snapshots"))
+        self.assertFalse(DocumentSnapshot.objects.filter(pk=self.error_2.pk).exists())
+        self.assertFalse(DocumentSnapshot.objects.filter(pk=self.unique.pk).exists())
+        self.assertTrue(DocumentSnapshot.objects.filter(pk=self.error_1.pk).exists())
+
+    def test_delete_selected_reports_a_message(self):
+        response = self._delete(snapshot_ids=[self.error_2.pk], follow=True)
+        messages = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("Deleted 1 snapshot" in m for m in messages), messages)
+
+    def test_delete_selected_ignores_unknown_ids(self):
+        response = self._delete(snapshot_ids=[self.error_2.pk, 999999], follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(DocumentSnapshot.objects.filter(pk=self.error_2.pk).exists())
+
+    def test_delete_selected_without_ids_is_a_no_op(self):
+        response = self._delete()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(DocumentSnapshot.objects.count(), 5)
+
+    def test_delete_selected_redirects_back_to_the_filtered_list(self):
+        response = self._delete(
+            snapshot_ids=[self.error_2.pk],
+            next=f"{reverse('monitor:manage_snapshots')}?duplicates=1",
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("duplicates=1", response.url)
+
+    def test_delete_selected_does_not_follow_external_redirect(self):
+        response = self._delete(snapshot_ids=[self.error_2.pk], next="https://evil.example.com/")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse("monitor:manage_snapshots"))
+
+    def test_deleting_a_snapshot_removes_its_pending_notifications(self):
+        user = get_user_model().objects.create_user(username="bob", email="b@e.com", password="x")
+        PendingNotification.objects.create(
+            user=user, document=self.doc, snapshot=self.error_2, old_snapshot=self.error_1
+        )
+        self._delete(snapshot_ids=[self.error_2.pk])
+        self.assertFalse(PendingNotification.objects.filter(snapshot=self.error_2).exists())
+
+    def test_get_is_not_allowed(self):
+        response = self.client.get(reverse("monitor:manage_snapshots_delete"))
+        self.assertEqual(response.status_code, 405)
+
+    def test_purge_duplicates_confirmation_page(self):
+        response = self.client.get(reverse("monitor:manage_snapshots_purge_duplicates"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Delete")
+        self.assertEqual(response.context["purge_count"], 2)
+
+    def test_purge_duplicates_keeps_earliest_capture_per_group(self):
+        response = self.client.post(reverse("monitor:manage_snapshots_purge_duplicates"))
+        self.assertEqual(response.status_code, 302)
+        self.assertRedirects(response, reverse("monitor:manage_snapshots"))
+        remaining = set(DocumentSnapshot.objects.values_list("pk", flat=True))
+        self.assertEqual(remaining, {self.error_1.pk, self.unique.pk, self.other.pk})
+
+    def test_purge_duplicates_reports_a_message(self):
+        response = self.client.post(
+            reverse("monitor:manage_snapshots_purge_duplicates"), follow=True
+        )
+        messages = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("Deleted 2" in m for m in messages), messages)
+
+    def test_purge_duplicates_is_scoped_to_the_requested_document(self):
+        self.client.post(
+            reverse("monitor:manage_snapshots_purge_duplicates"), {"document": self.doc.pk}
+        )
+        remaining = set(DocumentSnapshot.objects.values_list("pk", flat=True))
+        self.assertEqual(remaining, {self.error_1.pk, self.unique.pk, self.other.pk})
+
+    def test_purge_duplicates_with_nothing_to_delete(self):
+        DocumentSnapshot.objects.filter(text_hash="dup-hash").delete()
+        response = self.client.get(reverse("monitor:manage_snapshots_purge_duplicates"))
+        self.assertEqual(response.context["purge_count"], 0)
+        response = self.client.post(
+            reverse("monitor:manage_snapshots_purge_duplicates"), follow=True
+        )
+        self.assertEqual(DocumentSnapshot.objects.count(), 1)
 
 
 class UnsubscribeTokenViewTest(TestCase):

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page_title }} — TosDiff{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-8 col-lg-7">
+    <div class="td-card p-4 p-md-5">
+      <h1 class="h4 mb-3">{{ page_title }}?</h1>
+      {% if purge_count %}
+      <p class="mb-3">
+        This permanently deletes <strong>{{ purge_count }} snapshot{{ purge_count|pluralize }}</strong> —
+        every capture that repeats an identical body already stored for the same document.
+        These are almost always error or bot-block pages captured more than once.
+      </p>
+      <ul class="small mb-4" style="color: #991b1b;">
+        <li>The first capture of each group is kept, so the baseline and real change history survive.</li>
+        <li>Diffs and queued notifications that point at a deleted snapshot are removed with it.</li>
+        <li>This cannot be undone.</li>
+      </ul>
+      <form method="post">
+        {% csrf_token %}
+        {% if request.GET.document %}
+          <input type="hidden" name="document" value="{{ request.GET.document }}">
+        {% endif %}
+        <div class="d-flex flex-wrap gap-2">
+          <button type="submit" class="btn btn-danger">Delete {{ purge_count }} duplicate{{ purge_count|pluralize }}</button>
+          <a class="btn td-btn-outline" href="{% url 'monitor:manage_snapshots' %}">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% else %}
+  <div class="td-card p-4 p-md-5">
+    <h1 class="h4 mb-3">No duplicate snapshots</h1>
+    <p class="mb-0" style="color: var(--td-text-muted);">
+      Every capture we hold is the first of its kind for its document, so there is nothing to
+      clean up right now.
+    </p>
+    <a class="btn td-btn-outline mt-4" href="{% url 'monitor:manage_snapshots' %}">Back to snapshots</a>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

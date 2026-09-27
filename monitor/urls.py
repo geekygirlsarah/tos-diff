@@ -28,6 +28,9 @@ from .views import (
     ManageOrganizationDeleteView,
     ManageOrganizationListView,
     ManageOrganizationUpdateView,
+    ManageSnapshotDeleteView,
+    ManageSnapshotListView,
+    ManageSnapshotPurgeDuplicatesView,
     ManageSuggestionDeleteView,
     ManageSuggestionListView,
     ManageSuggestionReviewView,
@@ -185,6 +188,17 @@ urlpatterns = [
     ),
     path("manage/attention/", ManageAttentionView.as_view(), name="manage_attention"),
     path("manage/users/", ManageUserListView.as_view(), name="manage_users"),
+    path("manage/snapshots/", ManageSnapshotListView.as_view(), name="manage_snapshots"),
+    path(
+        "manage/snapshots/delete/",
+        ManageSnapshotDeleteView.as_view(),
+        name="manage_snapshots_delete",
+    ),
+    path(
+        "manage/snapshots/purge-duplicates/",
+        ManageSnapshotPurgeDuplicatesView.as_view(),
+        name="manage_snapshots_purge_duplicates",
+    ),
     path(
         "manage/documents/<int:pk>/check/",
         ManageDocumentCheckView.as_view(),
