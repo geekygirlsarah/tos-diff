@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: ["main", "master"]
 
+# Dependencies come exclusively from pyproject.toml + uv.lock — never from a
+# hand-maintained pip list (that drift is what previously left the test job
+# without pdfplumber, and the audit job blind to the real production set).
+# UV_FROZEN makes every uv command fail rather than silently re-resolve the
+# lock, so a stale uv.lock is a hard error instead of an invisible upgrade.
+env:
+  UV_FROZEN: "1"
+  UV_VERSION: "0.12.19"
+
 jobs:
   test:
     name: Test (Python ${{ matrix.python-version }})
@@ -24,24 +33,29 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: "pip"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install django requests beautifulsoup4 lxml coverage
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install locked dependencies
+        # --all-groups pulls the [dependency-groups] dev group (coverage, ruff).
+        run: uv sync --all-groups
 
       - name: Run migrations check
         env:
           DJANGO_SETTINGS_MODULE: tosdiff.settings
-        run: python manage.py migrate --run-syncdb
+        run: uv run python manage.py migrate --run-syncdb
 
       - name: Run tests with coverage
         env:
           DJANGO_SETTINGS_MODULE: tosdiff.settings
         run: |
-          coverage run manage.py test monitor --verbosity=2
-          coverage report --fail-under=80
+          uv run coverage run manage.py test monitor --verbosity=2
+          uv run coverage report --fail-under=80
 
   security:
     name: Security — dependency vulnerability scan
@@ -55,16 +69,21 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.14"
-          cache: "pip"
 
-      - name: Install pip-audit
-        run: pip install pip-audit
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
-      - name: Install project dependencies
-        run: pip install django requests beautifulsoup4 lxml
+      - name: Export the locked production dependency set
+        # --no-dev excludes test/lint tooling; auditing the exported lock means
+        # pip-audit sees exactly what ships in the production image.
+        run: uv export --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt
 
       - name: Audit dependencies for known vulnerabilities
-        run: pip-audit --strict
+        run: uvx pip-audit --strict -r /tmp/requirements.txt
 
   lint:
     name: Lint
@@ -78,12 +97,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.14"
-          cache: "pip"
 
-      - name: Install linting tools
-        run: pip install ruff
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install locked dependencies
+        run: uv sync --all-groups
 
       - name: Run ruff (lint + format check)
         run: |
-          ruff check .
-          ruff format --check .
+          uv run ruff check .
+          uv run ruff format --check .

@@ -194,12 +194,17 @@ class RecentChangesView(ListView):
         if doc_type:
             qs = qs.filter(document__document_type=doc_type)
         # A snapshot is "new" when no earlier snapshot of the same document exists,
-        # i.e. it is the document's first (baseline) capture.
+        # i.e. it is the document's first (baseline) capture.  ``captured_at`` is
+        # ``auto_now_add`` and is not guaranteed unique: platforms with coarse
+        # clock granularity (Windows resolves to ~15.6ms) stamp successive rows
+        # identically, which would make two captures both look like the first.
+        # The primary key is monotonic, so it breaks the tie and makes the
+        # ordering total.
         qs = qs.annotate(
             is_new=~Exists(
-                DocumentSnapshot.objects.filter(
-                    document=OuterRef("document"),
-                    captured_at__lt=OuterRef("captured_at"),
+                DocumentSnapshot.objects.filter(document=OuterRef("document")).filter(
+                    Q(captured_at__lt=OuterRef("captured_at"))
+                    | Q(captured_at=OuterRef("captured_at"), pk__lt=OuterRef("pk"))
                 )
             )
         )

@@ -2219,6 +2219,25 @@ class HomePageNewDocumentBadgeTest(TestCase):
         flags = self._flags(self.client.get(reverse("monitor:home")))
         self.assertEqual(sorted(flags.values()), [False, True])
 
+    def test_only_first_snapshot_is_new_when_timestamps_collide(self):
+        """Two captures stamped at the same instant must still order deterministically.
+
+        ``captured_at`` is ``auto_now_add``, and some platforms hand out identical
+        timestamps for rapid successive writes (Windows has ~15.6ms clock
+        granularity).  "Is there an earlier snapshot?" therefore cannot be
+        answered from ``captured_at`` alone — the primary key breaks the tie.
+        """
+        first = self._snapshot(self.tos_doc, "v1")
+        second = self._snapshot(self.tos_doc, "v2")
+        DocumentSnapshot.objects.filter(pk__in=[first.pk, second.pk]).update(
+            captured_at=timezone.now()
+        )
+
+        flags = self._flags(self.client.get(reverse("monitor:home")))
+
+        self.assertEqual(flags[first.pk], True)
+        self.assertEqual(flags[second.pk], False)
+
     def test_new_flag_is_scoped_per_document(self):
         """One document's history must not mark another document's snapshot as not-new."""
         self._snapshot(self.tos_doc, "v1")

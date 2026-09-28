@@ -1,0 +1,34 @@
+# Keep the build context small and free of local-only state. Note: .git is
+# deliberately NOT ignored — the footer "Last updated" context processor reads
+# `git log -1` from it at runtime.
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environments (the image builds its own in /opt/venv)
+.venv/
+venv/
+
+# Django
+db.sqlite3
+/staticfiles/
+/mediafiles/
+local_settings.py
+
+# Secrets — injected at runtime via env_file, never baked into the image
+.env
+.env.*
+
+# Test / coverage artefacts
+.coverage
+htmlcov/
+coverage.xml
+
+# Tooling
+.ruff_cache/
+.idea/
+.vscode/

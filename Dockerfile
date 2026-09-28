@@ -4,6 +4,15 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# uv resolves the dependency set from pyproject.toml + uv.lock, so the image
+# can never drift from the versions the tests and the security audit ran
+# against. The virtualenv lives outside /app so `COPY . .` cannot clobber it.
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PATH="/opt/venv/bin:$PATH"
+
 WORKDIR /app
 
 # Install system dependencies needed by psycopg (libpq) and lxml. Git is needed
@@ -15,25 +24,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies first (layer-cached unless requirements change)
-COPY pyproject.toml ./
-RUN pip install --upgrade pip && \
-    pip install \
-        django>=6.0.5 \
-        requests>=2.32 \
-        beautifulsoup4>=4.12 \
-        "lxml>=5.0" \
-        "pdfplumber>=0.11" \
-        "psycopg[binary]>=3.1" \
-        "gunicorn>=22.0" \
-        "playwright>=1.40"
+# Pinned uv version, matching CI (see .github/workflows/ci.yml).
+COPY --from=ghcr.io/astral-sh/uv:0.12.19 /uv /uvx /bin/
+
+# Install the locked dependencies first. --no-install-project skips installing
+# the project itself, which is not copied yet; this keeps the layer cached so
+# ordinary source edits do not re-resolve dependencies. Only edits to
+# pyproject.toml / uv.lock invalidate it. Note the django floor now comes from
+# pyproject (>=6.1) — the previous hardcoded `django>=6.0.5` could resolve to a
+# version without MAILERS / AdminEmailHandler(using=...) and break the boot.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --no-dev --no-install-project
 
 # Install Playwright's Chromium browser and its system libraries (--with-deps
-# runs apt-get for the shared libraries browsers need at runtime, e.g. libgtk-3)
+# runs apt-get for the shared libraries browsers need at runtime, e.g. libgtk-3).
+# Deliberately placed BEFORE `COPY . .`: playwright is a runtime dependency, so
+# this layer is already satisfied by the dependency sync above and the ~175MB
+# browser download is cached across ordinary source edits instead of re-running
+# on every one of them.
 RUN playwright install --with-deps chromium
 
-# Copy project source
+# Copy project source and install the project into the virtualenv.
 COPY . .
+RUN uv sync --no-dev
 
 # Collect static files (requires DJANGO_SETTINGS_MODULE to be set at build time
 # or via --build-arg; harmless if STATIC_ROOT doesn't exist yet)

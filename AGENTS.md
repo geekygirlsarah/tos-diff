@@ -30,7 +30,7 @@
 
 | Layer | Technology |
 |---|---|
-| Framework | Django 6.0+ (class-based views, ORM, admin) |
+| Framework | Django 6.1+ (class-based views, ORM, admin) — `MAILERS` + `AdminEmailHandler(using=…)` are hard requirements, so 6.0 will not boot |
 | Language | Python 3.12+ |
 | Database | PostgreSQL (production) / SQLite (local dev) |
 | Task scheduling | Daily cron job (`python manage.py fetch_documents`); no Celery/Redis |
@@ -74,7 +74,9 @@ TosDiff-New/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── docker-entrypoint.sh
-├── pyproject.toml        # Dependencies + coverage config
+├── .dockerignore         # Excludes .env/db.sqlite3/venvs but deliberately keeps .git
+├── pyproject.toml        # Dependencies (single source of truth) + coverage config
+├── uv.lock               # Locked resolution; what CI and Docker actually install
 ├── ruff.toml             # Linting rules
 └── .github/workflows/ci.yml
 ```
@@ -205,7 +207,8 @@ Conventions:
 
 - The site must be **responsive and mobile-first**: every page should work and look good from small phone screens up to wide desktop viewports. Use Bootstrap's responsive utilities (`row`/`col-*` grid, `flex-wrap`, `table-responsive`, `gap-*`) so content wraps and reflows instead of overflowing. All new pages must verify their layout at a small viewport width before being considered done.
 - The homepage (`monitor/home.html`) supports two query params: `days` (3, 7, 14, 30) and `type` (a valid `Document.DocumentType` value). Invalid values fall back to defaults. The distinct types present in the current time-window are passed as `document_types` in the view context. Snapshots are grouped into `day_groups` (day → organization → snapshots), ordered by day (newest first), then organization name (A–Z); `RecentChangesView` in `monitor/views.py` builds this structure and shows dates only (no timestamps). Its hero shows `total_organizations` / `total_documents` stats in a two-column layout.
-- A **newly tracked document** — one whose queued/displayed snapshot is its *first ever* baseline capture — is flagged with a green `New` badge (`.td-badge-new`) next to the document name. `RecentChangesView.get_queryset` annotates each row with `is_new` via `~Exists(...)` over any earlier `DocumentSnapshot` of the same document, so no schema change or backfill is needed and the flag applies retroactively to existing data. A long-tracked document's later changes render without the badge. (Note: `td-badge-new` also matches the stylesheet rule in `base.html`, so tests must assert on the rendered badge markup, not the bare class name.)
+- A **newly tracked document** — one whose queued/displayed snapshot is its *first ever* baseline capture — is flagged with a green `New` badge (`.td-badge-new`) next to the document name. `RecentChangesView.get_queryset` annotates each row with `is_new` via `~Exists(...)` over any *earlier* `DocumentSnapshot` of the same document, so no schema change or backfill is needed and the flag applies retroactively to existing data. A long-tracked document's later changes render without the badge. (Note: `td-badge-new` also matches the stylesheet rule in `base.html`, so tests must assert on the rendered badge markup, not the bare class name.)
+- "Earlier" must be a **total** order: the `Exists()` subquery matches `captured_at <` **OR** (`captured_at ==` **AND** `pk <`), because `captured_at` is `auto_now_add` and is not unique. Platforms with coarse clock granularity (Windows resolves to ~15.6ms — 1000 rapid `datetime.now()` calls yield 2 distinct values) stamp successive rows identically, which without the `pk` tiebreaker makes every one of them look like the document's first snapshot: multiple "New" badges, and no change ever shown. `HomePageNewDocumentBadgeTest.test_only_first_snapshot_is_new_when_timestamps_collide` pins the collision explicitly so the regression is caught on any platform, not just the one whose clock is coarse.
 - The same green badge is used for **newly tracked organizations** (`.td-badge-new-org`, an extra class so org and document badges stay distinguishable in markup), rendered next to the org name in the home page feed header and on the organizations page (root cards and every nested subsidiary, via `_subsidiary_node.html`). An organization is new when it has **no snapshot older than the start of the selected window** — i.e. every snapshot held for it is inside the `days` window — computed by the module-level `_new_organization_ids(organization_ids, days)` in `monitor/views.py` as a single `values_list(...).distinct()` query over all the orgs involved (one query total, not one per org; `HomePageNewOrganizationBadgeTest` and `OrganizationsPageNewBadgeTest` both guard against an N+1 regression). This is deliberately *independent* of its documents being new: adding a brand new document to a long-tracked organization flags the document but not the organization. The flag is therefore window-relative (an org whose oldest snapshot is 10 days old reads as established at `days=7` but new at `days=30`), which is what gives the badge an expiry — an absolute "first ever" definition would show `New` forever. `RecentChangesView` uses the ids directly; `OrganizationsView` instead calls `_flag_new_organizations(orgs, days)`, which walks roots + nested subsidiaries and sets `org.is_new` for the template. Both share `_window_days(request)` for parsing `?days=`.
 - The organizations page (`monitor/organizations.html`) shows a hero banner with `total_organizations` / `total_documents` stats plus per-organization cards; `OrganizationsView` provides those counts in context. It carries a `Newly tracked in:` chip row (`3/7/14/30` days, `days`/`valid_days` in context) that governs the org "New" badge only — the org list itself is unfiltered, so the label deliberately says "Newly tracked in" rather than "Time range" to avoid implying the list is filtered. Both pages share the `_tracked_organizations()` helper in `monitor/views.py` for the org count.
 - The organizations page (`monitor/organizations.html`) shows a hero banner with `total_organizations` / `total_documents` stats plus per-organization cards; `OrganizationsView` provides those counts in context. Both pages share the `_tracked_organizations()` helper in `monitor/views.py` for the org count.
@@ -218,13 +221,64 @@ Conventions:
 
 ## CI/CD (GitHub Actions)
 
-Three jobs run on every push/PR to `main`/`master`:
+**`pyproject.toml` + `uv.lock` are the single source of truth for dependencies.** CI, the Docker
+image, and local dev installs all resolve from the lock — never from a hand-maintained pip list.
+That duplication previously let the test job ship without `pdfplumber` (a top-level import in
+`services.py`, so the suite could not even import) and left the audit job checking 4 packages
+instead of the 27 that actually ship.
 
-1. **test** — Python 3.14; runs migrations, tests, and coverage (≥ 80% required)
-2. **security** — `pip-audit --strict` for known dependency vulnerabilities
-3. **lint** — `ruff check` + `ruff format --check`
+Local setup and commands:
+
+```bash
+uv sync --all-groups            # locked runtime + test/lint tooling
+uv run python manage.py test monitor --verbosity=2
+uv run coverage run manage.py test monitor && uv run coverage report --fail-under=80
+uv run ruff check . && uv run ruff format --check .
+uv lock --upgrade-package <name> # refresh a single dependency
+```
+
+`uv` pins `coverage` and `ruff` in the `[dependency-groups] dev` group (PEP 735), so
+`uv sync --all-groups` picks up everything CI needs and `uv sync --no-dev` excludes all of it.
+Do **not** re-add them as `[project.optional-dependencies]` — a tool that only appears in one
+mechanism is a tool CI silently misses.
+
+Three jobs run on every push/PR to `main`/`master`, all on Python 3.14 with `UV_FROZEN=1`
+(a stale lock is a hard error, never a silent upgrade):
+
+1. **test** — `uv sync --all-groups`, migrations check, then tests with coverage (≥ 80% required)
+2. **security** — `uv export --no-dev --no-emit-project` the locked **production** set, then
+   `pip-audit --strict` against it, so the audit covers exactly what the image installs
+3. **lint** — `uv run ruff check` + `uv run ruff format --check`
 
 All three jobs must pass before merging.
+
+### Docker
+
+The `Dockerfile` copies the pinned `uv` binary, runs `uv sync --no-dev --no-install-project`
+against `pyproject.toml` + `uv.lock` *before* copying the source (so the dependency layer stays
+cached across source edits), then `uv sync --no-dev` once the source is present. The virtualenv
+lives at `/opt/venv` (outside `/app`) and is prepended to `PATH`, so `docker-entrypoint.sh` and
+`CMD ["web"]` keep calling bare `python` / `gunicorn`. `playwright install --with-deps chromium`
+runs after the sync so it uses the venv's Playwright.
+
+Never hardcode a dependency list or a version floor in the `Dockerfile` — it has silently
+disagreed with `pyproject.toml` before (it asked for `django>=6.0.5` while the app needs
+`MAILERS` and `AdminEmailHandler(using=...)` from 6.1). `.dockerignore` keeps `.env`,
+`db.sqlite3`, and virtualenvs out of the build context but deliberately **keeps `.git`**, which
+the footer's "Last updated" context processor reads at runtime.
+
+`.gitattributes` pins `* text=auto eol=lf` and is **load-bearing, not cosmetic**: without it a
+Windows clone (`core.autocrlf=true`) checks out CRLF, the build context copies that into the
+image, and `docker-entrypoint.sh` ends up with a `#!/bin/sh\r` shebang — the image builds
+cleanly and then the container dies at startup with
+`exec /usr/local/bin/docker-entrypoint.sh: no such file or directory`. Every blob is already
+stored as LF, so the rule changes only what is checked out; if you ever see ~80 files show as
+modified after touching line endings, it is a stale stat cache, not real churn — `git add
+--renormalize .` settles it and stages nothing spurious.
+
+The Playwright browser install sits **before** `COPY . .` on purpose: playwright is a runtime
+dependency, so the ~175MB Chromium download is cached and a source-only rebuild stays at a few
+seconds instead of re-downloading the browser every time.
 
 ---
 

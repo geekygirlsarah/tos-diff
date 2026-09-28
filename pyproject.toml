@@ -13,16 +13,12 @@ dependencies = [
     "playwright>=1.40",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "coverage>=7.0",
-]
-
 [tool.coverage.run]
 source = ["."]
 omit = [
     "*/migrations/*",
     "*/venv/*",
+    "*/.venv/*",
     "manage.py",
     "tosdiff/wsgi.py",
     "tosdiff/asgi.py",
@@ -32,7 +28,12 @@ omit = [
 show_missing = true
 skip_covered = false
 
+# Test/lint tooling.  Kept in a single PEP 735 dependency group (not split
+# between an extra and a group) so `uv sync --all-groups` picks up everything
+# CI needs and `uv sync --no-dev` excludes all of it.  These are deliberately
+# NOT runtime dependencies, so they never reach the production image.
 [dependency-groups]
 dev = [
+    "coverage>=7.0",
     "ruff>=0.16.6",
 ]

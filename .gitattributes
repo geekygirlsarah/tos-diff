@@ -1,0 +1,21 @@
+# Normalise line endings on checkout.
+#
+# Without this, a Windows clone (core.autocrlf=true) checks text files out with
+# CRLF, and Docker's build context copies that working tree into the image.
+# docker-entrypoint.sh then has a `#!/bin/sh\r` shebang and the container dies
+# at startup with "exec /usr/local/bin/docker-entrypoint.sh: no such file or
+# directory" — the image builds fine and then refuses to run.
+#
+# All blobs are already stored as LF, so this changes how files are checked
+# out, not what is committed: no content churn in the repository.
+* text=auto eol=lf
+
+# Never mangle binaries.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
