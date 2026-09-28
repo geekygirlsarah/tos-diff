@@ -275,10 +275,16 @@ _CHALLENGE_URL_MARKERS = (
 )
 
 # Text that Cloudflare challenge pages commonly display while verifying.
+# The lower markers are the "security service / verification taking longer"
+# interstitial Cloudflare serves at the *original* document URL, where the
+# challenge JS runs and then redirects to the real page once it validates.
 _CHALLENGE_TEXT_MARKERS = (
     "verify you are human",
     "checking your browser",
     "enable javascript and cookies",
+    "this website uses a security service to protect against malicious bots",
+    "why is this verification taking longer",
+    "verification successful. waiting for",
 )
 
 # CSS selector for the interactive Turnstile checkbox iframe.  We only detect
@@ -292,29 +298,42 @@ DEFAULT_CHALLENGE_TIMEOUT = 30.0
 _CHALLENGE_POLL_SECONDS = 10.0
 
 
+def _challenge_text_matched(text: str) -> bool:
+    """Return True when *text* reads like a Cloudflare verification interstitial.
+
+    Used both against the live page body (see :func:`_looks_like_challenge`) and
+    against extracted document text in :func:`fetch_document_content`, so a
+    challenge page is never persisted as a (false-positive) document change.
+    """
+    lowered = text.lower()
+    return any(marker in lowered for marker in _CHALLENGE_TEXT_MARKERS)
+
+
 def _looks_like_challenge(page: Any) -> bool:
     """Return True if *page* is showing a Cloudflare verification challenge."""
     if any(marker in str(page.url) for marker in _CHALLENGE_URL_MARKERS):
         return True
     try:
         turnstile_count = page.locator(_TURNSTILE_IFRAME).count()
-        body_text = str(page.locator("body").inner_text(timeout=2000)).lower()
+        body_text = str(page.locator("body").inner_text(timeout=2000))
     except Exception:  # noqa: BLE001 - a mid-navigation page can raise; treat as not-challenge
         return False
     if isinstance(turnstile_count, int) and turnstile_count > 0:
         return True
-    return any(marker in body_text for marker in _CHALLENGE_TEXT_MARKERS)
+    return _challenge_text_matched(body_text)
 
 
 def _wait_for_challenge_to_clear(page: Any, challenge_timeout: float) -> None:
     """Wait up to *challenge_timeout* seconds for a challenge page to resolve.
 
     Cloudflare's non-interactive challenge runs fingerprinting checks in the
-    browser and then redirects to the real page.  While the challenge is
-    detected we keep polling: each poll waits up to ``_CHALLENGE_POLL_SECONDS``
-    for a load event so a late redirect has time to complete.  If the challenge
-    never clears within the deadline, we raise instead of extracting HTML that
-    would otherwise be persisted as a (false-positive) document change.
+    browser and then redirects to the real page; the interstitial we land on
+    first ("Verification successful. Waiting for <host> to respond") sits at the
+    original URL while that happens.  While the challenge is detected we keep
+    polling: each poll waits up to ``_CHALLENGE_POLL_SECONDS`` for a load event
+    so a late redirect has time to complete, then re-reads the body.  If the
+    challenge never clears within the deadline, we raise instead of extracting
+    HTML that would otherwise be persisted as a (false-positive) document change.
     """
     deadline = time.monotonic() + challenge_timeout
     while time.monotonic() < deadline and _looks_like_challenge(page):
@@ -843,6 +862,13 @@ def fetch_document_content(document: Document) -> tuple[str | None, str]:
                         document.url,
                     )
                     continue
+                if _challenge_text_matched(text):
+                    logger.warning(
+                        "fetch_document_content: %s returned a Cloudflare verification "
+                        "interstitial — will retry with Playwright so it can validate",
+                        document.url,
+                    )
+                    continue
                 if text:
                     Document.objects.filter(pk=document.pk).update(
                         document_format=Document.DocumentFormat.HTML
@@ -893,15 +919,25 @@ def fetch_document_content(document: Document) -> tuple[str | None, str]:
                     else "TosDiff UA",
                 )
                 continue
+            if _challenge_text_matched(text):
+                logger.warning(
+                    "fetch_document_content: %s still showing a Cloudflare verification "
+                    "interstitial after %s — will retry the next rung",
+                    document.url,
+                    "browser UA"
+                    if method == Document.FetchMethod.PLAYWRIGHT_BROWSER
+                    else "TosDiff UA",
+                )
+                continue
             Document.objects.filter(pk=document.pk).update(
                 document_format=Document.DocumentFormat.HTML
             )
             document.document_format = Document.DocumentFormat.HTML
             return text or None, method
 
-    # Every rung on the ladder came back as a bot-block page — mark the
-    # document failing so the daily run stops polling it and the changing
-    # error-reference values never produce false change digests.
+    # Every rung on the ladder came back as a bot-block or challenge page — mark
+    # the document failing so the daily run stops polling it and the changing
+    # error-reference / Ray-ID values never produce false change digests.
     logger.warning(
         "fetch_document_content: %s still bot-blocked after exhausting fetch "
         "ladder — marking document as failing",

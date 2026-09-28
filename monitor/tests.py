@@ -731,6 +731,25 @@ class PlaywrightResourceBlockingTest(TestCase):
 class CloudflareChallengeTest(TestCase):
     """Cloudflare verification pages are detected and waited out before extraction."""
 
+    # The "verification taking longer" interstitial Cloudflare serves at the
+    # *original* document URL (no /cdn-cgi/… marker), e.g. for www.lmcu.org.
+    WAIT_PAGE_BODY = (
+        "This website uses a security service to protect against malicious bots. "
+        "This page is displayed while the website verifies you are not a bot.\n\n"
+        "Verification successful. Waiting for www.lmcu.org to respond\n\n"
+        "Why is this verification taking longer?\n\n"
+        "This verification can take longer due to an older computer or a slow "
+        "internet connection.\n\n"
+        "What to do next:\n\n"
+        "- Wait briefly. Refreshing the page will restart the security "
+        "verification and may take longer.\n"
+        "- If the verification still does not complete, refresh this page.\n"
+        "- If you are still stuck on this page after a page refresh, refer to "
+        "Cloudflare's troubleshooting documentation for more help.\n\n"
+        "Ray ID: a410d29ae9dd9811\n\n"
+        "Performance and Security by Cloudflare Privacy"
+    )
+
     def setUp(self):
         from monitor import services
 
@@ -782,6 +801,90 @@ class CloudflareChallengeTest(TestCase):
 
         page = self._make_page()
         self.assertFalse(_looks_like_challenge(page))
+
+    def test_detects_waiting_interstitial_at_original_url(self):
+        from monitor.services import _looks_like_challenge
+
+        page = self._make_page(url="https://www.lmcu.org/privacy", body=self.WAIT_PAGE_BODY)
+        self.assertTrue(_looks_like_challenge(page))
+
+    def test_detects_slow_verification_interstitial(self):
+        from monitor.services import _looks_like_challenge
+
+        page = self._make_page(body="Just a moment... Why is this verification taking longer?")
+        self.assertTrue(_looks_like_challenge(page))
+
+    def test_detects_bot_verification_interstitial(self):
+        from monitor.services import _looks_like_challenge
+
+        page = self._make_page(
+            body=(
+                "This website uses a security service to protect against malicious "
+                "bots. This page is displayed while the website verifies you are "
+                "not a bot."
+            )
+        )
+        self.assertTrue(_looks_like_challenge(page))
+
+    def test_privacy_policy_mentioning_cloudflare_not_detected_as_challenge(self):
+        from monitor.services import _looks_like_challenge
+
+        page = self._make_page(
+            body=(
+                "# Privacy Policy\n\n"
+                "We use cookies delivered by Cloudflare to protect this site. "
+                "Contact our privacy team with reference questions about your "
+                "data access request."
+            )
+        )
+        self.assertFalse(_looks_like_challenge(page))
+
+    @patch("monitor.services.time.sleep")
+    @patch("monitor.services._rate_limit")
+    @patch("playwright.sync_api.sync_playwright")
+    def test_waits_out_interstitial_then_captures_final_page(
+        self,
+        mock_sync,
+        mock_rate,  # noqa: ARG002
+        mock_sleep,  # noqa: ARG002
+    ):
+        page = self._make_page(url="https://www.lmcu.org/privacy", body=self.WAIT_PAGE_BODY)
+        real_html = "<html><body><h1>Privacy Policy</h1><p>Final content</p></body></html>"
+
+        def _resolve_on_first_poll(*_args, **_kwargs):
+            page.locator.return_value.inner_text.return_value = "Privacy Policy Final content"
+            page.content.return_value = real_html
+
+        page.wait_for_load_state.side_effect = _resolve_on_first_poll
+        self._make_fake_playwright(mock_sync, page)
+
+        from monitor.services import fetch_html_playwright
+
+        html = fetch_html_playwright("https://www.lmcu.org/privacy", challenge_timeout=10)
+
+        self.assertEqual(html, real_html)
+        page.wait_for_load_state.assert_called_once_with("domcontentloaded", timeout=10000)
+
+    @patch("monitor.services.time.sleep")
+    @patch("monitor.services.time.monotonic")
+    @patch("monitor.services._rate_limit")
+    @patch("playwright.sync_api.sync_playwright")
+    def test_raises_when_interstitial_never_resolves(
+        self,
+        mock_sync,
+        mock_rate,  # noqa: ARG002
+        mock_mono,
+        mock_sleep,  # noqa: ARG002
+    ):
+        page = self._make_page(url="https://www.lmcu.org/privacy", body=self.WAIT_PAGE_BODY)
+        mock_mono.side_effect = [0.0, 1.0, 2.0, 30.0]
+        self._make_fake_playwright(mock_sync, page)
+
+        from monitor.services import fetch_html_playwright
+
+        with self.assertRaisesRegex(RuntimeError, "did not resolve"):
+            fetch_html_playwright("https://www.lmcu.org/privacy", challenge_timeout=5)
+        page.content.assert_not_called()
 
     @patch("monitor.services.time.sleep")
     @patch("monitor.services._rate_limit")
@@ -1212,6 +1315,79 @@ class BotBlockPageTest(TestCase):
         self.assertTrue(self.doc.is_failing)
         self.assertEqual(mock_playwright.call_count, 1)
         self.assertEqual(DocumentSnapshot.objects.filter(document=self.doc).count(), 0)
+
+
+class CloudflareInterstitialSnapshotTest(TestCase):
+    """A Cloudflare verification interstitial is never stored as a snapshot.
+
+    The in-page detector catches most cases, but the interstitial can also
+    arrive over plain HTTP or slip past the browser-side body read, so the
+    extracted text is checked as a final guard.
+    """
+
+    INTERSTITIAL_HTML = (
+        "<html><body><h1>Just a moment...</h1>"
+        "<p>This website uses a security service to protect against malicious "
+        "bots. This page is displayed while the website verifies you are not a "
+        "bot.</p>"
+        "<p>Why is this verification taking longer?</p>"
+        "<p>Ray ID: a410d29ae9dd9811</p></body></html>"
+    )
+
+    def setUp(self):
+        org = Organization.objects.create(name="LMCU", website_url="https://www.lmcu.org")
+        self.doc = Document.objects.create(organization=org, url="https://www.lmcu.org/privacy")
+
+    def _response(self, content: bytes, status: int = 200) -> MagicMock:
+        response = MagicMock()
+        response.status_code = status
+        response.headers = {"Content-Type": "text/html"}
+        response.url = self.doc.url
+        response.content = content
+        response.raise_for_status = MagicMock()
+        return response
+
+    def test_interstitial_over_plain_requests_is_not_snapshotted(self):
+        from monitor.services import _challenge_text_matched
+
+        text = extract_text(self.INTERSTITIAL_HTML)
+        self.assertTrue(_challenge_text_matched(text))
+
+    @patch("monitor.services.fetch_html_playwright")
+    @patch("monitor.services.requests.get")
+    def test_marks_failing_when_interstitial_persists_across_ladder(
+        self, mock_get, mock_playwright
+    ):
+        mock_get.return_value = self._response(self.INTERSTITIAL_HTML.encode())
+        mock_playwright.return_value = self.INTERSTITIAL_HTML
+
+        snapshot, created = fetch_and_snapshot(self.doc)
+
+        self.assertIsNone(snapshot)
+        self.assertFalse(created)
+        self.doc.refresh_from_db()
+        self.assertTrue(self.doc.is_failing)
+        self.assertEqual(DocumentSnapshot.objects.filter(document=self.doc).count(), 0)
+        self.assertEqual(mock_playwright.call_count, 2)
+
+    @patch("monitor.services.fetch_html_playwright")
+    @patch("monitor.services.requests.get")
+    def test_next_ladder_rung_captures_real_page_after_interstitial(
+        self, mock_get, mock_playwright
+    ):
+        mock_get.return_value = self._response(self.INTERSTITIAL_HTML.encode())
+        mock_playwright.side_effect = [
+            self.INTERSTITIAL_HTML,
+            "<html><body><h1>Privacy Policy</h1><p>Real privacy text</p></body></html>",
+        ]
+
+        snapshot, created = fetch_and_snapshot(self.doc)
+
+        self.assertTrue(created)
+        self.assertIn("Real privacy text", snapshot.cleaned_text)
+        self.doc.refresh_from_db()
+        self.assertFalse(self.doc.is_failing)
+        self.assertEqual(self.doc.fetch_method, Document.FetchMethod.PLAYWRIGHT_BROWSER)
 
 
 # ---------------------------------------------------------------------------
