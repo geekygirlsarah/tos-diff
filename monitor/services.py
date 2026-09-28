@@ -14,13 +14,14 @@ import re
 import secrets
 import threading
 import time
+import warnings
 from collections import defaultdict
 from collections.abc import Callable
 from typing import Any
 
 import pdfplumber
 import requests
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, Tag, XMLParsedAsHTMLWarning
 from django.conf import settings
 from django.core import signing
 from django.core.mail import send_mail
@@ -675,7 +676,17 @@ def extract_text(
     str
         Normalised, whitespace-collapsed markdown-like text.
     """
-    soup = BeautifulSoup(html, "lxml")
+    # Some policies are served with an XML declaration ahead of the HTML
+    # (Meta's supplemental/state privacy policies, for example), which makes
+    # bs4 warn that an HTML parser is parsing XML.  lxml's HTML builder copes
+    # fine and the parse below is already correct, so keep the HTML builder —
+    # an XML builder would keep namespace prefixes and reject unclosed tags,
+    # and the tag-name matching in _node_to_lines() would stop matching.  The
+    # warning is silenced for this call only, so it never leaks into the
+    # process-wide filters that other libraries rely on.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", XMLParsedAsHTMLWarning)
+        soup = BeautifulSoup(html, "lxml")
 
     # Remove always-stripped tags
     for tag in soup(_STRIP_TAGS):

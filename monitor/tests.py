@@ -7,11 +7,13 @@ Run with:  python manage.py test monitor
 import json
 import logging
 import tempfile
+import warnings
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import requests
+from bs4 import XMLParsedAsHTMLWarning
 from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.core import mail
@@ -496,6 +498,63 @@ class ExtractTextTest(TestCase):
     def test_clean_html_alias(self):
         html = "<html><body><h1>Hi</h1><p>There</p></body></html>"
         self.assertEqual(clean_html(html), extract_text(html))
+
+    # --- XML-declared pages --------------------------------------------------
+    #
+    # Some policies (Meta's, among others) are served with an XML declaration
+    # ahead of the HTML, which made bs4 <= 4.14.1 warn that an HTML parser was
+    # parsing XML.  bs4 4.14.2 rewrites such declarations to comments instead of
+    # warning, but pyproject only pins ">=4.12", so the warning is still
+    # reachable.  It is cosmetic, and an XML builder would be actively worse
+    # (it keeps namespace prefixes and rejects unclosed tags, so the tag-name
+    # matching in _node_to_lines() would stop matching) — so keep the HTML
+    # parser and silence just this warning.
+
+    XML_DECLARED_PAGE = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<!DOCTYPE html>\n"
+        '<html lang="en"><head><title>Policy</title></head>'
+        "<body><h1>Privacy Policy</h1><p>Effective <strong>now</strong>.</p></body></html>"
+    )
+
+    def test_xml_declared_page_extracts_html_semantics(self):
+        result = extract_text(self.XML_DECLARED_PAGE)
+        self.assertIn("# Privacy Policy", result)
+        self.assertIn("Effective **now**", result)
+
+    def test_xml_declared_page_does_not_warn(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            extract_text(self.XML_DECLARED_PAGE)
+        self.assertEqual(
+            [w for w in caught if issubclass(w.category, XMLParsedAsHTMLWarning)],
+            [],
+        )
+
+    def test_xml_stylesheet_page_does_not_warn(self):
+        html = (
+            '<?xml-stylesheet type="text/xsl" href="/style.xsl"?>'
+            "<html><body><p>Hi</p></body></html>"
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            extract_text(html)
+        self.assertIn("Hi", extract_text(html))
+        self.assertEqual(
+            [w for w in caught if issubclass(w.category, XMLParsedAsHTMLWarning)],
+            [],
+        )
+
+    def test_suppression_does_not_hide_other_warnings(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            extract_text(self.XML_DECLARED_PAGE)
+            warnings.warn("unrelated", UserWarning, stacklevel=1)
+        self.assertTrue(any(issubclass(w.category, UserWarning) for w in caught))
+
+    def test_suppression_is_not_installed_globally(self):
+        extract_text(self.XML_DECLARED_PAGE)
+        self.assertFalse(any(f[2] is XMLParsedAsHTMLWarning for f in warnings.filters))
 
 
 class ComputeHashTest(TestCase):
