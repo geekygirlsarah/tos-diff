@@ -62,6 +62,12 @@
        class="btn btn-sm td-btn-outline">
       ← Timeline
     </a>
+    {% if user.is_superuser %}
+    <a href="{% url 'monitor:manage_snapshot_delete' snapshot.pk %}"
+       class="btn btn-sm btn-danger">
+      Delete snapshot
+    </a>
+    {% endif %}
   </div>
 </div>
 

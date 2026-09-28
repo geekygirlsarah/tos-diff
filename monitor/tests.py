@@ -4402,6 +4402,120 @@ class ManageSnapshotDeleteViewTest(TestCase):
         self.assertEqual(DocumentSnapshot.objects.count(), 1)
 
 
+class ManageSnapshotDeleteOneViewTest(TestCase):
+    """A single odd capture can be deleted from the pages where it is viewed."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(name="Acme", website_url="https://acme.com")
+        self.doc = Document.objects.create(organization=self.org, url="https://acme.com/tos")
+        self.older = DocumentSnapshot.objects.create(
+            document=self.doc, cleaned_text="Real terms v1", text_hash="hash-1"
+        )
+        self.odd = DocumentSnapshot.objects.create(
+            document=self.doc,
+            cleaned_text="Access Denied reference #18.1.2.3",
+            text_hash="hash-2",
+        )
+        DocumentSnapshot.objects.filter(pk=self.older.pk).update(
+            captured_at=timezone.now() - timezone.timedelta(days=2)
+        )
+        DocumentSnapshot.objects.filter(pk=self.odd.pk).update(
+            captured_at=timezone.now() - timezone.timedelta(days=1)
+        )
+        self.url = reverse("monitor:manage_snapshot_delete", args=[self.odd.pk])
+
+    def test_get_renders_a_confirmation_with_a_text_preview(self):
+        _login_as_superuser(self.client)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["object"], self.odd)
+        # The admin has to be able to see *what* they are about to throw away.
+        self.assertContains(response, "Access Denied reference #18.1.2.3")
+
+    def test_get_warns_about_queued_notifications(self):
+        _login_as_superuser(self.client)
+        response = self.client.get(self.url)
+        self.assertTrue(response.context["warnings"])
+
+    def test_post_deletes_the_snapshot_and_returns_to_the_timeline(self):
+        _login_as_superuser(self.client)
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 302)
+        self.assertRedirects(response, reverse("monitor:document_detail", args=[self.doc.pk]))
+        self.assertFalse(DocumentSnapshot.objects.filter(pk=self.odd.pk).exists())
+        self.assertTrue(DocumentSnapshot.objects.filter(pk=self.older.pk).exists())
+
+    def test_post_reports_a_message(self):
+        _login_as_superuser(self.client)
+        response = self.client.post(self.url, follow=True)
+        messages = [str(m) for m in response.context["messages"]]
+        self.assertTrue(any("Deleted" in m for m in messages), messages)
+
+    def test_post_deletes_pending_notifications_referencing_the_snapshot(self):
+        user = get_user_model().objects.create_user(username="bob", email="b@e.com", password="x")
+        PendingNotification.objects.create(
+            user=user, document=self.doc, snapshot=self.odd, old_snapshot=self.older
+        )
+        _login_as_superuser(self.client)
+        self.client.post(self.url)
+        self.assertFalse(PendingNotification.objects.filter(snapshot=self.odd).exists())
+
+    def test_unknown_snapshot_is_404(self):
+        _login_as_superuser(self.client)
+        response = self.client.get(reverse("monitor:manage_snapshot_delete", args=[999999]))
+        self.assertEqual(response.status_code, 404)
+
+    def test_anonymous_is_redirected_to_login(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/accounts/login/", response.url)
+
+    def test_non_superuser_is_forbidden(self):
+        get_user_model().objects.create_user(username="bob", email="b@e.com", password="x")
+        self.client.login(username="bob", password="x")
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(DocumentSnapshot.objects.filter(pk=self.odd.pk).exists())
+
+    def test_delete_button_is_shown_to_superusers_on_viewing_pages(self):
+        _login_as_superuser(self.client)
+        for url in (
+            reverse("monitor:snapshot_text", args=[self.doc.pk, self.odd.pk]),
+            reverse("monitor:document_detail", args=[self.doc.pk]),
+            reverse("monitor:snapshot_diff", args=[self.doc.pk, self.older.pk, self.odd.pk]),
+            reverse("monitor:manage_snapshots"),
+        ):
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertContains(response, self.url)
+
+    def test_delete_button_is_hidden_from_anonymous_visitors(self):
+        for url in (
+            reverse("monitor:snapshot_text", args=[self.doc.pk, self.odd.pk]),
+            reverse("monitor:document_detail", args=[self.doc.pk]),
+            reverse("monitor:snapshot_diff", args=[self.doc.pk, self.older.pk, self.odd.pk]),
+        ):
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertNotContains(response, self.url)
+
+    def test_delete_button_is_hidden_from_regular_users(self):
+        get_user_model().objects.create_user(username="bob", email="b@e.com", password="x")
+        self.client.login(username="bob", password="x")
+        response = self.client.get(
+            reverse("monitor:snapshot_text", args=[self.doc.pk, self.odd.pk])
+        )
+        self.assertNotContains(response, self.url)
+
+    def test_timeline_reflows_after_a_delete(self):
+        _login_as_superuser(self.client)
+        self.client.post(self.url)
+        response = self.client.get(reverse("monitor:document_detail", args=[self.doc.pk]))
+        self.assertEqual(
+            [s.pk for s, _older in response.context["snapshot_pairs"]], [self.older.pk]
+        )
+
+
 class UnsubscribeTokenViewTest(TestCase):
     """A signed unsubscribe link removes a document subscription without logging in."""
 

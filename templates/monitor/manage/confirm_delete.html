@@ -18,6 +18,10 @@
         {% endfor %}
       </ul>
       {% endif %}
+      {% if preview %}
+      <p class="small mb-2" style="color: var(--td-text-muted);">Snapshot content:</p>
+      <pre class="small mb-4 p-3" style="white-space: pre-wrap; word-break: break-word; max-height: 18rem; overflow-y: auto;">{{ preview|truncatechars:1500 }}</pre>
+      {% endif %}
       <form method="post">
         {% csrf_token %}
         <div class="d-flex flex-wrap gap-2">

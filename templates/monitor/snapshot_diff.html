@@ -65,6 +65,12 @@
         <a href="{% url 'monitor:snapshot_text' document.pk snap_old.pk %}"
            class="btn btn-sm td-btn-outline">Full text</a>
       </div>
+      {% if user.is_superuser %}
+      <div class="px-3 pb-2 text-end">
+        <a href="{% url 'monitor:manage_snapshot_delete' snap_old.pk %}"
+           class="btn btn-sm btn-danger">Delete old snapshot</a>
+      </div>
+      {% endif %}
     </div>
   </div>
   <div class="col-md-6">
@@ -79,6 +85,12 @@
         <a href="{% url 'monitor:snapshot_text' document.pk snap_new.pk %}"
            class="btn btn-sm td-btn-outline">Full text</a>
       </div>
+      {% if user.is_superuser %}
+      <div class="px-3 pb-2 text-end">
+        <a href="{% url 'monitor:manage_snapshot_delete' snap_new.pk %}"
+           class="btn btn-sm btn-danger">Delete new snapshot</a>
+      </div>
+      {% endif %}
     </div>
   </div>
 </div>

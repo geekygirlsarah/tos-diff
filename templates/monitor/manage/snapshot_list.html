@@ -135,6 +135,8 @@
             <td class="text-end text-nowrap">
               <a class="btn btn-sm td-btn-outline"
                  href="{% url 'monitor:snapshot_text' snapshot.document.pk snapshot.pk %}">Text</a>
+              <a class="btn btn-sm btn-danger"
+                 href="{% url 'monitor:manage_snapshot_delete' snapshot.pk %}">Delete</a>
             </td>
           </tr>
           {% endfor %}

@@ -28,6 +28,7 @@ from .views import (
     ManageOrganizationDeleteView,
     ManageOrganizationListView,
     ManageOrganizationUpdateView,
+    ManageSnapshotDeleteOneView,
     ManageSnapshotDeleteView,
     ManageSnapshotListView,
     ManageSnapshotPurgeDuplicatesView,
@@ -193,6 +194,11 @@ urlpatterns = [
         "manage/snapshots/delete/",
         ManageSnapshotDeleteView.as_view(),
         name="manage_snapshots_delete",
+    ),
+    path(
+        "manage/snapshots/<int:pk>/delete/",
+        ManageSnapshotDeleteOneView.as_view(),
+        name="manage_snapshot_delete",
     ),
     path(
         "manage/snapshots/purge-duplicates/",

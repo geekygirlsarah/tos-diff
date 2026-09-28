@@ -15,7 +15,7 @@ from django.db.models import Count, Exists, F, OuterRef, Prefetch, Q
 from django.db.models.deletion import ProtectedError
 from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
-from django.urls import reverse_lazy
+from django.urls import reverse, reverse_lazy
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views import View
@@ -1160,6 +1160,49 @@ class ManageSnapshotDeleteView(SuperuserRequiredMixin, View):
         if target and url_has_allowed_host_and_scheme(target, allowed_hosts=None):
             return redirect(target)
         return redirect("monitor:manage_snapshots")
+
+
+class ManageSnapshotDeleteOneView(SuperuserRequiredMixin, DeleteView):
+    """Confirm, then delete a single snapshot — the escape hatch for one odd capture.
+
+    The bulk ``manage_snapshots_delete`` needs the tick boxes on the snapshot manager, which is
+    awkward when the thing that looks wrong is a single capture spotted on the timeline, the
+    full-text page, or a diff.  This view deletes exactly one snapshot and lands back on that
+    document's timeline, so the diff links and the "New" badges recompute from what is left.
+    """
+
+    model = DocumentSnapshot
+    template_name = "monitor/manage/confirm_delete.html"
+
+    def get_success_url(self) -> str:
+        return reverse("monitor:document_detail", args=[self.object.document_id])
+
+    def get_context_data(self, **kwargs) -> dict:
+        context = super().get_context_data(**kwargs)
+        context["page_title"] = "Delete snapshot"
+        context["cancel_url"] = reverse(
+            "monitor:snapshot_text", args=[self.object.document_id, self.object.pk]
+        )
+        context["preview"] = self.object.cleaned_text
+        warnings = [
+            "Any queued email notification that referenced this capture will be dropped.",
+            "The timeline, diff links, and duplicate count for this document will be recalculated.",
+        ]
+        if not self.object.document.snapshots.filter(
+            pk__lt=self.object.pk, captured_at__lte=self.object.captured_at
+        ).exists():
+            warnings.insert(
+                0,
+                "This is the document's earliest capture, so the next one becomes its baseline "
+                "and will be shown as a new document.",
+            )
+        context["warnings"] = warnings
+        return context
+
+    def form_valid(self, form) -> HttpResponse:
+        response = super().form_valid(form)
+        messages.success(self.request, f"Deleted snapshot {self.object}.")
+        return response
 
 
 class ManageSnapshotPurgeDuplicatesView(SuperuserRequiredMixin, TemplateView):
