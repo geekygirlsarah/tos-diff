@@ -37,8 +37,8 @@
 | HTML fetching | `requests` library (default) or Playwright (JS-heavy sites) |
 | HTML parsing | BeautifulSoup4 + lxml |
 | PDF extraction | pdfplumber |
-| Web server | Gunicorn (production) |
-| Frontend | Bootstrap 5 (responsive, accessible) |
+| Web server | Gunicorn (production), behind WhiteNoise for static files |
+| Frontend | Bootstrap 5.3.3, **vendored** in `static/` (responsive, accessible) |
 | Containerisation | Docker + docker-compose |
 | CI/CD | GitHub Actions |
 | Linting | Ruff |
@@ -71,6 +71,8 @@ TosDiff-New/
 ├── templates/
 │   ├── base.html         # Bootstrap 5 base layout
 │   └── monitor/          # App-specific templates
+├── static/
+│   └── vendor/bootstrap/5.3.3/   # Vendored Bootstrap (css, js, LICENSE)
 ├── Dockerfile
 ├── docker-compose.yml
 ├── docker-entrypoint.sh
@@ -217,6 +219,16 @@ Conventions:
 - Shared UI styling lives in `templates/base.html` as CSS custom properties under the `--td-*` variables (blues/greens palette). Custom classes are prefixed `td-` (e.g. `td-card`, `td-chip`, `td-badge`, `td-card-row`, `td-support-btn`).
 - The footer (`templates/base.html`) renders a "Support TosDiff" line with GitHub Sponsors and Ko-Fi pill buttons when `SPONSOR_GITHUB_URL` / `SPONSOR_KOFI_URL` are set. A context processor (`monitor/context_processors.py`) exposes those settings to every template, and the whole section stays hidden when neither URL is configured (so local dev and future funded states render nothing).
 - The footer's "Last updated: <Month Year>" line is computed from the repository's last commit by the `last_updated` context processor (`monitor/context_processors.py`), which shells out to `git log -1 --format=%cs` once per process and caches the result. The line is hidden when git is unavailable or the checkout has no `.git` directory; the Dockerfile installs `git` so production images can compute it.
+
+### Static assets (vendored Bootstrap)
+
+- **Bootstrap 5.3.3 is vendored, not CDN-loaded.** `templates/base.html` starts with `{% load static %}` and pulls `vendor/bootstrap/5.3.3/css/bootstrap.min.css` and `.../js/bootstrap.bundle.min.js` from `static/` via `{% static %}`. There are no `integrity`/`crossorigin` attributes and no third-party asset hosts.
+- **Why:** the site previously loaded Bootstrap from jsDelivr behind an SRI `integrity` hash. One mistyped character in that hash made the browser refuse to execute the script — the page stayed fully styled (the CSS digest is separate) while every Bootstrap behaviour died silently, so the mobile navbar collapse did nothing at all. Self-hosting removes the hash entirely, removes the third-party availability dependency, and lets the privacy policy stop disclosing CDN IP logging.
+- The vendored files are the upstream 5.3.3 release **with the trailing `sourceMappingURL` comment removed** (we do not vendor the ~2MB `.map` files, and the manifest storage treats a missing map as a hard `collectstatic` error). Everything else is byte-identical. Expected post-strip sha384 digests are pinned in `BootstrapAssetsTest.VENDORED_DIGESTS`; if you re-vendor a different version, update those constants and the paths together.
+- **`STATIC_URL` must keep its leading slash** (`"/static/"`). A bare `"static/"` is resolved relative to the current path, so every page under a prefix (`/organizations/`) would request `/organizations/static/...` and 404.
+- **Production static serving requires WhiteNoise.** Render fronts Gunicorn directly with no nginx, and Django's staticfiles view is dev-only, so `whitenoise.middleware.WhiteNoiseMiddleware` (placed immediately after `SecurityMiddleware`) serves `STATIC_ROOT`. The Dockerfile already runs `collectstatic`; `whitenoise` is listed in both `pyproject.toml` and the Dockerfile's `pip install`. Without this the whole site would ship unstyled.
+- `STORAGES["staticfiles"]` is `whitenoise.storage.CompressedManifestStaticFilesStorage`, so production URLs are content-hashed. `WHITENOISE_USE_FINDERS`/`WHITENOISE_AUTOREFRESH` follow `DEBUG` so a fresh dev checkout without a `collectstatic` pass still serves files. In `DEBUG=True` Django skips the manifest entirely; in production a missing asset raises loudly at `collectstatic` time instead of 404ing quietly.
+- `BootstrapAssetsTest` and `StaticFilesConfigTest` guard all of the above, including an end-to-end check that the URLs `base.html` references actually return the framework over HTTP.
 
 ---
 

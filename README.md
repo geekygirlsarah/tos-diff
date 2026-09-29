@@ -259,7 +259,9 @@ docker compose exec web python manage.py test monitor --verbosity=2
 3. Set `DJANGO_ALLOWED_HOSTS` to your domain(s)
 4. Use a strong `DB_PASSWORD`
 5. Put Gunicorn behind a reverse proxy (nginx, Caddy, etc.) that handles TLS
-6. Serve `staticfiles/` from the reverse proxy or a CDN
+6. Run `collectstatic` so `staticfiles/` is populated. WhiteNoise serves it
+   automatically (it is enabled in `MIDDLEWARE`), so a reverse proxy is optional;
+   if you use nginx you can still serve `/static/` from it as shown below.
 
 ### Example: deploy on a VPS with nginx
 

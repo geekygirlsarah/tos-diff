@@ -71,6 +71,9 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Serves collected static files in production (no nginx in front of Gunicorn).
+    # Must sit directly after SecurityMiddleware.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -185,9 +188,30 @@ USE_TZ = True
 
 
 # Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/6.0/howto/static-files/
+# https://docs.django.org/en/6.0/howto/static-files/
+#
+# Leading slash on STATIC_URL is required: a bare "static/" is resolved
+# relative to the current path, so every page under a prefix (e.g.
+# /organizations/) would request /organizations/static/... and 404.
+STATIC_URL = "/static/"
 
-STATIC_URL = "static/"
+# Project-level static assets, including the vendored Bootstrap 5.3.3 copy in
+# static/vendor/bootstrap/. Collected into STATIC_ROOT at build time.
+STATICFILES_DIRS = [BASE_DIR / "static"]
+
+# Production serves STATIC_ROOT through WhiteNoise. There is no nginx in front
+# of Gunicorn on Render, and Django's staticfiles view is dev-only, so without
+# this middleware nothing would serve /static/ and the site would ship
+# unstyled with a dead navbar.
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+}
+
+# The manifest storage needs a collectstatic pass; while it is absent (e.g. a
+# fresh dev checkout) fall back to plain serving so {% static %} still resolves.
+WHITENOISE_USE_FINDERS = DEBUG
+WHITENOISE_AUTOREFRESH = DEBUG
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 

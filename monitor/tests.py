@@ -2665,6 +2665,125 @@ class LastUpdatedFooterTest(TestCase):
         self.assertEqual(mock_run.call_count, 1)
 
 
+class BootstrapAssetsTest(TestCase):
+    """Bootstrap is vendored under static/ and served first-party.
+
+    These guard the failure mode that motivated vendoring: a CDN ``integrity``
+    hash with one mistyped character left the page fully styled (the CSS digest
+    is separate) while every Bootstrap behaviour died silently, so the mobile
+    navbar collapsed to nothing when tapped. Serving from our own origin removes
+    the hash entirely, and the manifest storage below turns a missing asset into
+    a loud collectstatic error rather than a 404 nobody notices.
+    """
+
+    BOOTSTRAP_CSS = "vendor/bootstrap/5.3.3/css/bootstrap.min.css"
+    BOOTSTRAP_JS = "vendor/bootstrap/5.3.3/js/bootstrap.bundle.min.js"
+
+    # sha384 of the vendored files. These differ from the upstream CDN digests by
+    # exactly the stripped trailing sourceMappingURL comment (see AGENTS.md).
+    VENDORED_DIGESTS = {
+        BOOTSTRAP_CSS: "wtrIRqztIYGvkbJp4m6Vi2ETIkyUhJ/Ik2fZyGQZwVxCUYzb3nUwIZnNQjzGbTLm",
+        BOOTSTRAP_JS: "HqZ4oRyF0315sRxm0icZGRHk+ppSPetPAgYnl2DqGNobhcX2fLVRHC771KNO7RC8",
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.html = self.client.get(reverse("monitor:home")).content.decode()
+
+    def test_base_html_loads_bootstrap_from_local_static(self):
+        # Compare against {% static %}'s own resolution so the assertion holds in
+        # both DEBUG modes (Django caches the storage instance across overrides,
+        # and only DEBUG decides whether URLs come out hashed).
+        self.assertIn(f'href="{static(self.BOOTSTRAP_CSS)}"', self.html)
+        self.assertIn(f'src="{static(self.BOOTSTRAP_JS)}"', self.html)
+
+    def test_no_external_asset_hosts_remain(self):
+        """A CDN URL sneaking back in re-opens the silent-failure hole."""
+        for host in ("cdn.jsdelivr.net", "unpkg.com", "cdnjs.cloudflare.com"):
+            self.assertNotIn(host, self.html)
+        self.assertNotIn("integrity=", self.html)
+
+    def test_static_url_is_root_relative(self):
+        """A bare "static/" resolves relative to the path, 404ing on nested URLs."""
+        self.assertTrue(settings.STATIC_URL.startswith("/"), settings.STATIC_URL)
+
+    def test_vendored_assets_exist_and_match_digests(self):
+        for name, digest in self.VENDORED_DIGESTS.items():
+            path = Path(settings.BASE_DIR) / "static" / name
+            with self.subTest(asset=name):
+                self.assertTrue(path.is_file(), f"missing vendored asset: {name}")
+                actual = base64.b64encode(hashlib.sha384(path.read_bytes()).digest()).decode()
+                self.assertEqual(actual, digest, f"{name} differs from the vendored copy")
+
+    def test_vendored_assets_are_discoverable_by_staticfiles(self):
+        """The finders must see both files, or collectstatic cannot pick them up."""
+        for name in self.VENDORED_DIGESTS:
+            with self.subTest(asset=name):
+                self.assertIsNotNone(find(name), f"staticfiles cannot find {name}")
+
+    def test_assets_are_served_over_http(self):
+        """The referenced URLs must actually return the framework, not a 404."""
+        for name in (self.BOOTSTRAP_CSS, self.BOOTSTRAP_JS):
+            with self.subTest(asset=name):
+                response = self.client.get(static(name))
+                self.assertEqual(response.status_code, 200)
+                body = b"".join(response.streaming_content)
+                # The banner reads "Bootstrap v5.3.3" in the JS but
+                # "Bootstrap  v5.3.3" in the CSS, so match on the version alone.
+                self.assertIn(b"v5.3.3", body)
+
+    def test_manifest_storage_hashes_urls_in_production(self):
+        """With DEBUG=False the manifest backend must produce a hashed URL.
+
+        Django resolves the storage instance once and only resets it on
+        STATIC_ROOT/STATIC_URL changes, so reset it explicitly here.
+        """
+        self.addCleanup(setattr, staticfiles_storage, "_wrapped", staticfiles_storage._wrapped)
+        with override_settings(DEBUG=False):
+            staticfiles_storage._wrapped = empty
+            html = self.client.get(reverse("monitor:home")).content.decode()
+        urls = re.findall(r'(?:href|src)="([^"]*bootstrap[^"]*)"', html)
+        self.assertEqual(len(urls), 2, html)
+        for url in urls:
+            with self.subTest(url=url):
+                self.assertRegex(url, r"^/static/vendor/bootstrap/5\.3\.3/.+\.[0-9a-f]{12}\.\w+$")
+
+    def test_navbar_toggler_targets_an_existing_element(self):
+        """``data-bs-target`` must resolve to a real element id or the menu never opens."""
+        match = re.search(r'data-bs-target="#(?P<target>[\w-]+)"', self.html)
+        self.assertIsNotNone(match, "navbar toggler is missing data-bs-target")
+        target = match.group("target")
+        self.assertIn(f'id="{target}"', self.html)
+
+    def test_navbar_toggler_and_collapse_are_present(self):
+        self.assertIn('data-bs-toggle="collapse"', self.html)
+        self.assertIn('class="navbar-toggler"', self.html)
+        self.assertIn("navbar-collapse", self.html)
+
+
+class StaticFilesConfigTest(TestCase):
+    """Production serves static through WhiteNoise; there is no nginx in front."""
+
+    def test_whitenoise_middleware_is_enabled(self):
+        self.assertIn("whitenoise.middleware.WhiteNoiseMiddleware", settings.MIDDLEWARE)
+
+    def test_whitenoise_follows_security_middleware(self):
+        middlewares = list(settings.MIDDLEWARE)
+        self.assertLess(
+            middlewares.index("django.middleware.security.SecurityMiddleware"),
+            middlewares.index("whitenoise.middleware.WhiteNoiseMiddleware"),
+        )
+
+    def test_manifest_storage_is_configured(self):
+        self.assertEqual(
+            settings.STORAGES["staticfiles"]["BACKEND"],
+            "whitenoise.storage.CompressedManifestStaticFilesStorage",
+        )
+
+    def test_project_static_dir_is_registered(self):
+        self.assertIn(Path(settings.BASE_DIR) / "static", settings.STATICFILES_DIRS)
+
+
 class TermsViewTest(TestCase):
     def test_returns_200(self):
         self.assertEqual(self.client.get(reverse("monitor:terms")).status_code, 200)
