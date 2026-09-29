@@ -135,6 +135,45 @@
     .td-badge-other { background: #f1f5f9; color: #475569; }
     .td-badge-error { background: #fee2e2; color: #991b1b; }
     .td-badge-new { background: var(--td-primary); color: #fff; }
+    .td-tag {
+      background: var(--td-surface-variant, #e2e8f0);
+      color: var(--td-text-muted);
+      text-decoration: none;
+      border: 1px solid transparent;
+    }
+    a.td-tag:hover {
+      background: var(--td-primary-light);
+      color: var(--td-primary-dark);
+      border-color: var(--td-primary);
+    }
+    .td-tag-filter {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.3rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      border: 1px solid var(--td-border);
+      color: var(--td-text-muted);
+      background: #fff;
+      text-decoration: none;
+      transition: all 0.15s ease;
+    }
+    .td-tag-filter:hover {
+      border-color: var(--td-primary);
+      color: var(--td-primary);
+      background: var(--td-primary-light);
+    }
+    .td-tag-filter.active {
+      background: var(--td-primary);
+      color: #fff;
+      border-color: var(--td-primary);
+    }
+    .td-tag-filter .td-tag-count {
+      font-size: 0.7rem;
+      opacity: 0.75;
+    }
     a.td-card-link {
       text-decoration: none;
       color: inherit;

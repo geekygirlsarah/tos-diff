@@ -23,13 +23,29 @@
   </div>
 </div>
 
-<div class="d-flex flex-wrap align-items-center gap-2 mb-4">
+<div class="d-flex flex-wrap align-items-center gap-2 mb-3">
   <span class="small fw-semibold me-1" style="color: var(--td-text-muted);">Newly tracked in:</span>
   {% for d in valid_days %}
-  <a href="?days={{ d }}" class="td-chip {% if days == d %}active{% endif %}"
+  <a href="?days={{ d }}{{ tag_filter_suffix }}" class="td-chip {% if days == d %}active{% endif %}"
      aria-current="{% if days == d %}true{% else %}false{% endif %}">{{ d }} days</a>
   {% endfor %}
 </div>
+
+{% if tags %}
+<div class="d-flex flex-wrap align-items-center gap-2 mb-4">
+  <span class="small fw-semibold me-1" style="color: var(--td-text-muted);">Filter by tag:</span>
+  {% if active_tag %}
+  <a href="?days={{ days }}" class="td-tag-filter" aria-current="false">Clear filter</a>
+  {% endif %}
+  {% for t in tags %}
+  <a href="?days={{ days }}&amp;tag={{ t.slug }}"
+     class="td-tag-filter {% if active_tag and active_tag.pk == t.pk %}active{% endif %}"
+     {% if active_tag and active_tag.pk == t.pk %}aria-current="true"{% else %}aria-current="false"{% endif %}>
+    {{ t.name }} <span class="td-tag-count">{{ t.organization_count }}</span>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
 
 {% if organizations %}
   <div class="d-flex flex-column gap-4">
@@ -53,6 +69,10 @@
             {{ org.get_category_display }}
           </span>
           {% endif %}
+          {% for tag in org.tags.all %}
+          <a href="?days={{ days }}&amp;tag={{ tag.slug }}" class="td-badge td-tag"
+             title="Filter by {{ tag.name }}">{{ tag.name }}</a>
+          {% endfor %}
           {% if org.is_new %}
           <span class="td-badge td-badge-new td-badge-new-org"
                 title="Newly tracked in the last {{ days }} days">New</span>

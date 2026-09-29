@@ -50,25 +50,43 @@ class Tag(models.Model):
 
 class Organization(models.Model):
     class Category(models.TextChoices):
+        # A category is the organization's *primary* industry. Traits that cut across
+        # industries (advertising, AI, food delivery, payments) belong in ``tags`` so
+        # that conglomerates like Uber or Amazon have one unambiguous home.
         TECHNOLOGY = "technology", "Technology & Software"
-        FINANCIAL = "financial", "Financial Services"
-        HEALTHCARE = "healthcare", "Healthcare & Pharmaceuticals"
+        SOCIAL_MEDIA = "social_media", "Social, Search & Advertising"
+        GAMING = "gaming", "Gaming & Interactive Entertainment"
         ENTERTAINMENT_STREAMING = "entertainment_streaming", "Entertainment & Streaming"
-        MEDIA = "media", "Media & Entertainment"
-        SOCIAL_MEDIA = "social_media", "Social Media & Content Platforms"
-        HOSPITALITY = "hospitality", "Hospitality & Hotels"
+        MEDIA = "media", "Media, News & Publishing"
+        FOOD_DELIVERY = "food_delivery", "Food Delivery & Local Services"
         RETAIL = "retail", "Retail & E-Commerce"
+        AIRLINES_TRAVEL = "airlines_travel", "Airlines & Travel"
+        HOSPITALITY = "hospitality", "Hospitality & Hotels"
+        # Financial services is split three ways: deposit-taking lenders, investment
+        # banks/brokers, and insurers have materially different terms of service.
+        BANKING = "banking", "Banking & Lending"
+        INVESTMENTS = "investments", "Investments & Asset Management"
+        INSURANCE = "insurance", "Insurance"
+        HEALTHCARE = "healthcare", "Healthcare & Pharmaceuticals"
+        EDUCATION = "education", "Education & Online Learning"
+        NONPROFIT = "nonprofit", "Nonprofit & Foundation"
+        GOVERNMENT = "government", "Government & Public Sector"
+        UTILITIES = "utilities", "Utilities & Energy"
+        AUTOMOTIVE = "automotive", "Automotive & Transportation"
+        TELECOM = "telecom", "Telecommunications"
+        PROFESSIONAL_SERVICES = "professional_services", "Professional & Consulting Services"
+        LOGISTICS = "logistics", "Logistics & Shipping"
         OTHER = "other", "Other"
 
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=255, unique=True, blank=True)
     website_url = models.URLField(max_length=500)
     category = models.CharField(
-        max_length=30,
+        max_length=50,
         choices=Category.choices,
         blank=True,
         default="",
-        help_text="Industry category for this organization.",
+        help_text="Primary industry for this organization. Use tags for cross-industry traits.",
     )
     tags = models.ManyToManyField(
         Tag,

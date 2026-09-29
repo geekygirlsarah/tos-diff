@@ -142,6 +142,14 @@ def _flag_new_organizations(orgs: list[Organization], days: int) -> None:
         apply(org)
 
 
+def _active_tag(request) -> Tag | None:
+    """Resolve the ``?tag=`` query param to a Tag, or None when absent/unknown."""
+    slug = request.GET.get("tag", "").strip()
+    if not slug:
+        return None
+    return Tag.objects.filter(slug=slug).first()
+
+
 def _duplicate_snapshot_ids(document_id: int | None = None) -> list[int]:
     """Return the ids of snapshots that merely repeat an earlier capture of the same document.
 
@@ -326,12 +334,37 @@ class SnapshotDiffView(DetailView):
 
 
 class OrganizationsView(ListView):
-    """Lists all organizations with their documents organized in hierarchy trees."""
+    """Lists all organizations with their documents organized in hierarchy trees.
+
+    Supports two orthogonal query params: ``?days=`` (the "newly tracked in" window) and
+    ``?tag=`` (filter by tag). The tag filter is applied to whole *branches*: a root
+    survives if it or any of its descendants carries the tag, and untagged siblings inside
+    a surviving branch are still rendered. Rendering only the matched rows would tear the
+    hierarchy apart, which is the main thing this page communicates.
+    """
 
     template_name = "monitor/organizations.html"
     context_object_name = "organizations"
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.active_tag: Tag | None = None
+
+    def setup(self, request, *args, **kwargs) -> None:
+        super().setup(request, *args, **kwargs)
+        # Resolved once and reused by both get_queryset and get_context_data so the page
+        # costs a single extra query for the filter rather than two.
+        self.active_tag = _active_tag(request)
+
     def get_queryset(self):
+        active_tag = self.active_tag
+        if active_tag is None:
+            matching_ids = None  # No filter: every organization matches.
+        else:
+            matching_ids = set(
+                Organization.objects.filter(tags=active_tag).values_list("id", flat=True)
+            )
+
         all_orgs = list(
             Organization.objects.all()
             .prefetch_related(
@@ -349,15 +382,17 @@ class OrganizationsView(ListView):
         for org in all_orgs:
             children_by_parent.setdefault(org.parent_id, []).append(org)
 
-        def build_node(org: Organization) -> int:
-            """Recursively attach nested_subsidiaries and compute document counts."""
+        def build_node(org: Organization) -> tuple[int, bool]:
+            """Attach the subtree and return ``(document_count, branch_contains_a_match)``."""
             own_docs = list(org.documents.all())
             own_count = len(own_docs)
             subsidiaries = []
             sub_count = 0
+            branch_matches = matching_ids is None or org.pk in matching_ids
 
             for child in children_by_parent.get(org.pk, []):
-                child_total = build_node(child)
+                child_total, child_matches = build_node(child)
+                branch_matches = branch_matches or child_matches
                 if child_total > 0:
                     subsidiaries.append(child)
                     sub_count += child_total
@@ -366,12 +401,12 @@ class OrganizationsView(ListView):
             org.own_doc_count = own_count  # type: ignore[attr-defined]
             org.sub_doc_count = sub_count  # type: ignore[attr-defined]
             org.total_doc_count = own_count + sub_count  # type: ignore[attr-defined]
-            return org.total_doc_count
+            return org.total_doc_count, branch_matches
 
         roots = []
         for root in children_by_parent.get(None, []):
-            total = build_node(root)
-            if total > 0:
+            total, branch_matches = build_node(root)
+            if total > 0 and branch_matches:
                 roots.append(root)
 
         return roots
@@ -384,6 +419,20 @@ class OrganizationsView(ListView):
         context["valid_days"] = VALID_DAYS
         context["total_organizations"] = len(context["organizations"])
         context["total_documents"] = Document.objects.count()
+
+        active_tag = self.active_tag
+        context["active_tag"] = active_tag
+        # Lets the "newly tracked in" chips carry the active tag across, so narrowing to
+        # one tag and then changing the window doesn't silently drop the filter. The bare
+        # "&" is intentional: template autoescaping renders it as the &amp; an href needs.
+        context["tag_filter_suffix"] = f"&tag={active_tag.slug}" if active_tag else ""
+        # Only offer tags that are actually in use, most-used first, so the filter row
+        # never offers a dead end. One query for the whole page.
+        context["tags"] = (
+            Tag.objects.annotate(organization_count=Count("organizations"))
+            .filter(organization_count__gt=0)
+            .order_by("-organization_count", "name")
+        )
 
         # Flag newly tracked organizations (same window-relative rule as the home page).
         _flag_new_organizations(context["organizations"], days)

@@ -98,18 +98,50 @@ class OrganizationCategoryTagsTest(TestCase):
     def test_all_categories_exist(self):
         expected = [
             "technology",
-            "financial",
-            "healthcare",
+            "social_media",
+            "gaming",
             "entertainment_streaming",
             "media",
-            "social_media",
-            "hospitality",
+            "food_delivery",
             "retail",
+            "airlines_travel",
+            "hospitality",
+            "banking",
+            "investments",
+            "insurance",
+            "healthcare",
+            "education",
+            "nonprofit",
+            "government",
+            "utilities",
+            "automotive",
+            "telecom",
+            "professional_services",
+            "logistics",
             "other",
         ]
         actual = [c.value for c in Organization.Category]
         for value in expected:
             self.assertIn(value, actual)
+
+    def test_financial_services_was_split_up(self):
+        """The old catch-all "financial" bucket is gone; banks and brokerages have
+        their own categories and existing rows were migrated to one of them."""
+        self.assertNotIn("financial", [c.value for c in Organization.Category])
+
+    def test_every_category_value_fits_the_field(self):
+        """Guards the max_length bump: a longer value would be truncated on save."""
+        field = Organization._meta.get_field("category")
+        for choice in Organization.Category:
+            self.assertLessEqual(len(choice.value), field.max_length)
+
+    def test_every_category_label_is_distinct(self):
+        labels = [c.label for c in Organization.Category]
+        self.assertEqual(len(labels), len(set(labels)))
+
+    def test_other_is_the_final_choice(self):
+        """Admin/forms render choices in declaration order, so OTHER stays last."""
+        self.assertEqual(Organization.Category.choices[-1][0], "other")
 
     def test_tags_can_be_added(self):
         tag1 = Tag.objects.create(name="SaaS")
@@ -124,6 +156,93 @@ class OrganizationCategoryTagsTest(TestCase):
 
     def test_tags_optional(self):
         self.assertEqual(self.org.tags.count(), 0)
+
+
+class FinancialCategorySplitMigrationTest(TransactionTestCase):
+    """The data migration that retires the ``financial`` category.
+
+    Organizations already in the database hold a raw string in ``Organization.category``.
+    Dropping ``FINANCIAL`` from the choices would leave those rows pointing at a value
+    that no longer validates, so the migration has to move them to a surviving category
+    rather than blanking or deleting them. We migrate everything to ``banking``: it is by
+    far the largest of the three successor buckets, and every straggler is a one-click fix
+    in the management UI rather than a lost row.
+    """
+
+    migrate_from = ("monitor", "0017_document_ordering")
+    migrate_to = ("monitor", "0019_organization_category_split")
+
+    def _migrate(self, target):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate([target])
+        return executor.loader.project_state([target]).apps
+
+    def setUp(self):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate([self.migrate_from])
+        old_apps = executor.loader.project_state([self.migrate_from]).apps
+        # Historical models are plain Django models without the real ``save()``, which is
+        # where the slug is auto-filled, so every row needs an explicit slug.
+        self.Organization = old_apps.get_model("monitor", "Organization")
+        self.Organization.objects.create(
+            name="JPMorgan Chase",
+            slug="jpmorgan-chase",
+            website_url="https://jpmorgan.com",
+            category="financial",
+        )
+        self.Organization.objects.create(
+            name="Walmart",
+            slug="walmart",
+            website_url="https://walmart.com",
+            category="retail",
+        )
+        self.Organization.objects.create(
+            name="Uncategorized",
+            slug="uncategorized",
+            website_url="https://example.com",
+            category="",
+        )
+
+    def tearDown(self):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
+
+    def test_financial_rows_move_to_banking(self):
+        new_apps = self._migrate(self.migrate_to)
+        Organization = new_apps.get_model("monitor", "Organization")
+        self.assertEqual(Organization.objects.get(name="JPMorgan Chase").category, "banking")
+
+    def test_no_row_is_left_pointing_at_a_retired_value(self):
+        new_apps = self._migrate(self.migrate_to)
+        Organization = new_apps.get_model("monitor", "Organization")
+        self.assertFalse(Organization.objects.filter(category="financial").exists())
+
+    def test_other_categories_are_untouched(self):
+        new_apps = self._migrate(self.migrate_to)
+        Organization = new_apps.get_model("monitor", "Organization")
+        self.assertEqual(Organization.objects.get(name="Walmart").category, "retail")
+
+    def test_uncategorized_rows_stay_uncategorized(self):
+        new_apps = self._migrate(self.migrate_to)
+        Organization = new_apps.get_model("monitor", "Organization")
+        self.assertEqual(Organization.objects.get(name="Uncategorized").category, "")
+
+    def test_reverse_is_a_noop_that_still_applies(self):
+        """Rolling back must not raise, and must not scramble rows that are already valid.
+
+        The reverse cannot restore ``financial`` — once every row reads ``banking`` there is
+        no way to tell which ones used to be financial. It is a declared no-op instead of an
+        ``IrreversibleError`` so a rollback of a *later* migration is never blocked by this
+        one; ``banking`` is a valid choice at 0018 anyway, so the data stays consistent.
+        """
+        self._migrate(self.migrate_to)
+        old_apps = self._migrate(self.migrate_from)
+        Organization = old_apps.get_model("monitor", "Organization")
+        self.assertEqual(Organization.objects.get(name="JPMorgan Chase").category, "banking")
+        self.assertEqual(Organization.objects.get(name="Walmart").category, "retail")
 
 
 class OrganizationModelTest(TestCase):
@@ -2985,6 +3104,153 @@ class OrganizationsPageNewBadgeTest(TestCase):
 
         with CaptureQueriesContext(connection) as five_orgs:
             self.client.get(reverse("monitor:organizations"))
+
+        self.assertEqual(len(one_org.captured_queries), len(five_orgs.captured_queries))
+
+
+class OrganizationsPageTagFilterTest(TestCase):
+    """The organizations page exposes tags as a user-facing filter.
+
+    Tags previously existed only as a data-entry aid on the management form: the public
+    page prefetched them (``views.OrganizationsView.get_queryset``) but no template ever
+    rendered them, so there was no way for a visitor to use them. The page now offers a
+    ``?tag=`` filter with clickable tag badges on every organization and subsidiary.
+    """
+
+    def setUp(self):
+        self.advertising = Tag.objects.create(name="Advertising")
+        self.food_delivery = Tag.objects.create(name="Food Delivery")
+
+        self.meta = Organization.objects.create(
+            name="Meta", website_url="https://meta.com", category="social_media"
+        )
+        self.meta.tags.add(self.advertising)
+        Document.objects.create(
+            organization=self.meta, url="https://meta.com/tos", document_type="tos"
+        )
+
+        self.instagram = Organization.objects.create(
+            name="Instagram", website_url="https://instagram.com", parent=self.meta
+        )
+        self.instagram.tags.add(self.advertising)
+        Document.objects.create(
+            organization=self.instagram,
+            url="https://instagram.com/privacy",
+            document_type="privacy",
+        )
+
+        self.door_dash = Organization.objects.create(
+            name="DoorDash", website_url="https://doordash.com", category="food_delivery"
+        )
+        self.door_dash.tags.add(self.food_delivery)
+        Document.objects.create(
+            organization=self.door_dash, url="https://doordash.com/tos", document_type="tos"
+        )
+
+    def _org_names(self, response):
+        """Root organization names rendered, with nested subsidiaries flattened in."""
+        names = []
+
+        def walk(org):
+            names.append(org.name)
+            for child in org.nested_subsidiaries:
+                walk(child)
+
+        for org in response.context["organizations"]:
+            walk(org)
+        return names
+
+    def test_no_filter_shows_every_organization(self):
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertEqual(sorted(self._org_names(response)), ["DoorDash", "Instagram", "Meta"])
+
+    def test_tag_filter_narrows_to_matching_organizations(self):
+        response = self.client.get(reverse("monitor:organizations"), {"tag": "food-delivery"})
+        self.assertEqual(self._org_names(response), ["DoorDash"])
+
+    def test_tag_filter_keeps_untagged_organizations_out(self):
+        response = self.client.get(reverse("monitor:organizations"), {"tag": "advertising"})
+        self.assertNotIn("DoorDash", self._org_names(response))
+
+    def test_tag_filter_keeps_matching_subsidiaries_in_their_tree(self):
+        """A tagged subsidiary stays nested under its parent rather than becoming a root."""
+        response = self.client.get(reverse("monitor:organizations"), {"tag": "advertising"})
+        roots = [o.name for o in response.context["organizations"]]
+        self.assertEqual(roots, ["Meta"])
+        self.assertEqual(
+            [c.name for c in response.context["organizations"][0].nested_subsidiaries],
+            ["Instagram"],
+        )
+
+    def test_tag_filter_shows_untagged_sibling_subsidiaries_of_a_match(self):
+        """Filtering must not hide a subsidiary just because a *sibling* matched.
+
+        The filter answers "which branches contain a match", not "render only matched
+        rows" — otherwise Instagram would vanish from Meta's card and the hierarchy
+        that gives the page its meaning would fall apart.
+        """
+        whatsapp = Organization.objects.create(
+            name="WhatsApp", website_url="https://whatsapp.com", parent=self.meta
+        )
+        Document.objects.create(
+            organization=whatsapp, url="https://whatsapp.com/tos", document_type="tos"
+        )
+        response = self.client.get(reverse("monitor:organizations"), {"tag": "advertising"})
+        self.assertIn("WhatsApp", self._org_names(response))
+
+    def test_page_exposes_active_tag_in_context(self):
+        response = self.client.get(reverse("monitor:organizations"), {"tag": "advertising"})
+        self.assertEqual(response.context["active_tag"], self.advertising)
+
+    def test_unknown_tag_falls_back_to_no_filter(self):
+        response = self.client.get(reverse("monitor:organizations"), {"tag": "nope"})
+        self.assertIsNone(response.context["active_tag"])
+        self.assertEqual(sorted(self._org_names(response)), ["DoorDash", "Instagram", "Meta"])
+
+    def test_page_lists_available_tags_with_counts(self):
+        response = self.client.get(reverse("monitor:organizations"))
+        by_slug = {t.slug: t for t in response.context["tags"]}
+        self.assertEqual(sorted(by_slug), ["advertising", "food-delivery"])
+        self.assertEqual(by_slug["advertising"].organization_count, 2)
+        self.assertEqual(by_slug["food-delivery"].organization_count, 1)
+
+    def test_unused_tags_are_not_offered_as_filters(self):
+        Tag.objects.create(name="Unused")
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertNotIn("unused", [t.slug for t in response.context["tags"]])
+
+    def test_tag_badges_render_on_organization_cards(self):
+        response = self.client.get(reverse("monitor:organizations"), {"tag": "food-delivery"})
+        self.assertContains(response, 'class="td-badge td-tag"')
+
+    def test_tag_badges_link_to_the_tag_filter(self):
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertContains(response, "tag=food-delivery")
+
+    def test_tag_badges_render_on_subsidiaries(self):
+        response = self.client.get(reverse("monitor:organizations"))
+        self.assertContains(response, "tag=advertising")
+
+    def test_tag_filter_is_preserved_across_day_chips(self):
+        """Switching the "newly tracked in" window must not silently drop the tag filter."""
+        response = self.client.get(reverse("monitor:organizations"), {"tag": "advertising"})
+        self.assertContains(response, "days=3&amp;tag=advertising")
+
+    def test_active_tag_filter_does_not_scale_queries(self):
+        with CaptureQueriesContext(connection) as one_org:
+            self.client.get(reverse("monitor:organizations"), {"tag": "advertising"})
+
+        for i in range(4):
+            org = Organization.objects.create(
+                name=f"Filler {i}", website_url=f"https://filler{i}.com"
+            )
+            org.tags.add(self.advertising)
+            Document.objects.create(
+                organization=org, url=f"https://filler{i}.com/tos", document_type="tos"
+            )
+
+        with CaptureQueriesContext(connection) as five_orgs:
+            self.client.get(reverse("monitor:organizations"), {"tag": "advertising"})
 
         self.assertEqual(len(one_org.captured_queries), len(five_orgs.captured_queries))
 

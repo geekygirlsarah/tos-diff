@@ -24,6 +24,10 @@
           {{ subsidiary.get_category_display }}
         </span>
         {% endif %}
+        {% for tag in subsidiary.tags.all %}
+        <a href="?days={{ days }}&amp;tag={{ tag.slug }}" class="td-badge td-tag"
+           title="Filter by {{ tag.name }}">{{ tag.name }}</a>
+        {% endfor %}
         {% if subsidiary.is_new %}
         <span class="td-badge td-badge-new td-badge-new-org"
               title="Newly tracked in the last {{ days }} days">New</span>
